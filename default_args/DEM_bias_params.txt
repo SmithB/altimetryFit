@@ -1,0 +1,3 @@
+spacing=2500
+expected_rms=1.  
+expected_rms_grad2=0.0006  

@@ -1,0 +1,25 @@
+#! /usr/bin/env bash
+
+base=$1
+
+#pad=8000; feather=5000
+#pad=2000; feather=8000
+# for 60-km tiles:
+pad=5000; feather=5000
+
+rm $base/dz.h5 ;
+make_mosaic.py -R -w -p $pad -f $feather  -d $base -g '*/*.h5' -O $base/dz.h5 --in_group dz/ -F  count dz sigma_dz misfit_scaled_rms misfit_rms cell_area mask
+
+
+rm $base/z0.h5;
+this_replace='-R'
+fields="z0 sigma_z0 count misfit_rms misfit_scaled_rms cell_area mask"
+for field in $fields; do
+    echo $field
+    make_mosaic.py -w -p $pad -f $feather -d $base -g '*/*.h5' -O $base/z0.h5 --in_group z0 -F $field $this_replace
+
+    this_replace=''
+
+done
+
+
