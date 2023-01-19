@@ -23,18 +23,36 @@ from LSsurf import fd_grid
 from surfaceChange import reread_data_from_fits
 from LSsurf.subset_DEM_stack import subset_DEM_stack
 import pointCollection as pc
-from pyTMD import compute_tide_corrections
-from SMBcorr import assign_firn_variable
 from datetime import datetime, timedelta
+import warnings
 import h5py
 import sys
 import glob
 import re
 
+# attempt imports
+try:
+    import pointAdvection
+except ModuleNotFoundError:
+    warnings.filterwarnings("module")
+    warnings.warn("pointAdvection not available", ImportWarning)
+try:
+    from pyTMD import compute_tide_corrections
+except ModuleNotFoundError:
+    warnings.filterwarnings("module")
+    warnings.warn("pyTMD not available", ImportWarning)
+try:
+    from SMBcorr import assign_firn_variable
+except ModuleNotFoundError:
+    warnings.filterwarnings("module")
+    warnings.warn("SMBcorr not available", ImportWarning)
+# ignore warnings
+warnings.filterwarnings("ignore")
+
 def make_sensor_dict(h5_file):
     '''
     make a dictionary of sensors a fit output file.
-    
+
     Input: h5f: h5py file containing the fit output
     Output: dict giving the sensor for each number
     '''
@@ -45,7 +63,7 @@ def make_sensor_dict(h5_file):
 
         sensor_re=re.compile('sensor_(\d+)')
         for sensor_key, sensor in h5f['/meta/sensors/'].attrs.items():
-            sensor_num=int(sensor_re.search(sensor_key).group(1))            
+            sensor_num=int(sensor_re.search(sensor_key).group(1))
             this_sensor_dict[sensor_num]=sensor
     return this_sensor_dict
 
@@ -86,7 +104,7 @@ def read_ICESat(xy0, W, gI_file, sensor=1, hemisphere=-1, DEM=None):
         if hemisphere==-1:
             # ICESat time is seconds after Noon, Jan 1 2000.
             # Convert to years after Midnight, Jan 1 2000
-            # full calculation: 
+            # full calculation:
             #t_is1=np.datetime64('2000-01-01T12:00:00')\
             #    + D.time*np.timedelta64(1,'s')
             #D.time = 2000. + (t_is1 \
@@ -136,7 +154,7 @@ def read_ATM(xy0, W, gI_file, sensor=3, blockmedian_scale=100.):
         D.assign({'sensor':np.zeros_like(D.time)+sensor})
         D.time=matlab_to_year(D.time)
         D0[ind]=D.copy_subset(good, datasets=['x','y','z','time',
-                                              'sigma','sigma_corr','sensor', 
+                                              'sigma','sigma_corr','sensor',
                                               'slope_mag'])
         if blockmedian_scale is not None:
             D0[ind].blockmedian(blockmedian_scale)
@@ -156,7 +174,7 @@ def read_LVIS(xy0, W, gI_file, sensor=4, blockmedian_scale=100):
         if not np.any(good):
             continue
         D.assign({  'sigma': np.sqrt((4*slope_mag)**2+D.noise_50m**2+0.05**2),
-                    'sigma_corr':0.025+np.zeros_like(D.time), 
+                    'sigma_corr':0.025+np.zeros_like(D.time),
                     'slope_mag':slope_mag})
         #if D.size==D.zb.size:
         #    # some LVIS data have a zb field, which is a better estimator of surface elevation than the 'z' field
@@ -164,7 +182,7 @@ def read_LVIS(xy0, W, gI_file, sensor=4, blockmedian_scale=100):
         D.assign({'sensor':np.zeros_like(D.time)+sensor})
         D.time=matlab_to_year(D.time)
         D0[ind]=D.copy_subset(good, datasets=['x','y','z','time','sigma',
-                                              'sigma_corr','sensor', 
+                                              'sigma_corr','sensor',
                                               'slope_mag'])
         if D0[ind].size > 5:
             D0[ind].blockmedian(blockmedian_scale)
@@ -196,7 +214,7 @@ def read_data(xy0, W, hemisphere=1, bm_scale=None, \
                 # remove cycle 1 (overconstrains 2018-2019 based on not enough data)
                 Di.index(Di.time > 2019.0)
     if not IS2_only:
-        D_IS = read_ICESat(xy0, W, GI_files(hemisphere)['ICESat1'], 
+        D_IS = read_ICESat(xy0, W, GI_files(hemisphere)['ICESat1'],
                            sensor=laser_key()['ICESat1'],
                            hemisphere=hemisphere, DEM=DEM)
         if D_IS is not None:
@@ -217,7 +235,7 @@ def read_data(xy0, W, hemisphere=1, bm_scale=None, \
             # add the DEM data unless we've decided explicitly to exclude it.
             D_DEM, sensor_dict = read_DEM_data(xy0, W, sensor_dict, \
                                 GI_file=GI_files(hemisphere)['DEM'], \
-                                hemisphere=hemisphere, 
+                                hemisphere=hemisphere,
                                 blockmedian_scale=bm_scale['DEM'],
                                 subset_stack=True, year_offset=year_offset)
             if D_DEM is not None:
@@ -242,7 +260,7 @@ def read_data(xy0, W, hemisphere=1, bm_scale=None, \
 
     return D, sensor_dict
 
-def read_DEM_data(xy0, W, sensor_dict, GI_file=None, hemisphere=1, sigma_corr=20., 
+def read_DEM_data(xy0, W, sensor_dict, GI_file=None, hemisphere=1, sigma_corr=20.,
                   blockmedian_scale=100., subset_stack=False, year_offset=0.5):
 
     D = pc.geoIndex().from_file(GI_file, read_file=False).query_xy_box(xy0[0]+np.array([-W['x']/2, W['x']/2]), xy0[1]+np.array([-W['y']/2, W['y']/2]), fields=['x','y','z','sigma','time','sensor'])
@@ -254,7 +272,7 @@ def read_DEM_data(xy0, W, sensor_dict, GI_file=None, hemisphere=1, sigma_corr=20
         first_key_num=0
     key_num=0
     temp_sensor_dict=dict()
-    
+
     # some DEMs come up as problematic in testing.  Here is where we remove them
     # need to make a 'problem_DEMs.txt' file in the same directory as the GI.
     # Lines should have a filename (no directory) and an optional comment
@@ -287,7 +305,7 @@ def read_DEM_data(xy0, W, sensor_dict, GI_file=None, hemisphere=1, sigma_corr=20
         # subset the DEMs so that there is about one per year
         this_bin_width=np.maximum(400, 2*blockmedian_scale)
         DEM_number_list=subset_DEM_stack(D_temp, xy0, W['x'], \
-                                         bin_width=this_bin_width, 
+                                         bin_width=this_bin_width,
                                          year_offset=year_offset)
     else:
         DEM_number_list=[int(Di.sensor[0]) for Di in D_temp]
@@ -297,7 +315,7 @@ def read_DEM_data(xy0, W, sensor_dict, GI_file=None, hemisphere=1, sigma_corr=20
         new_D += [D[num]]
         new_D[-1].sensor[:]=count+first_key_num
         sensor_dict[count+first_key_num] = temp_sensor_dict[num]
-        
+
     return new_D, sensor_dict
 
 def custom_edits(data):
@@ -330,7 +348,7 @@ def apply_tides(D, xy0, W, tide_mask_file, tide_directory, tide_model):
     if np.any(is_els.ravel()):
         # N.B.  removed the half-day offset in the tide correction.
         # Old version read:  (D.time-(2018+0.5/365.25))*24*3600*365.25
-        # updates have made time values equivalent to years- Y2K +2000, 
+        # updates have made time values equivalent to years- Y2K +2000,
         # consistent between IS1 and IS2 (2/18/2022)
         D.tide_ocean = compute_tide_corrections(\
                 D.x, D.y, (D.time-2000)*24*3600*365.25,
@@ -486,6 +504,9 @@ def fit_OIB(xy0, Wxy=4e4, \
             avg_mask_directory=None, \
             tide_directory=None, \
             tide_model='CATS2008', \
+            lagrangian=False, \
+            velocity_file=None, \
+            lagrangian_epoch=2000.0, \
             year_mask_dir=None, \
             avg_scales=None,\
             DEM_grid_bias_params=None):
@@ -558,14 +579,14 @@ def fit_OIB(xy0, Wxy=4e4, \
 
     if (firn_fixed or firn_rescale) and reread_dirs is None and \
         calc_error_file is None and reread_file is None:
-        assign_firn_variable(data, firn_correction, firn_directory, hemisphere, 
+        assign_firn_variable(data, firn_correction, firn_directory, hemisphere,
                          model_version=firn_version, subset_valid=False)
 
         if firn_fixed:
             data.z -= data.h_firn
     if firn_rescale:
         # the grid has one node at each domain corner.
-        this_grid=fd_grid( [xy0[1]+np.array([-0.5, 0.5])*Wxy, 
+        this_grid=fd_grid( [xy0[1]+np.array([-0.5, 0.5])*Wxy,
                 xy0[0]+np.array([-0.5, 0.5])*Wxy], [Wxy, Wxy],\
              name=firn_correction+'_scale', srs_proj4=SRS_proj4)
         bias_model_args += [{'name': firn_correction+'_scale',  \
@@ -593,6 +614,43 @@ def fit_OIB(xy0, Wxy=4e4, \
     custom_edits(data)
     assign_sigma_corr(data)
 
+    # if using a lagrangian advection scheme
+    if lagrangian:
+        # verbose output of lagrangian parameters
+        print(f'Advect parcels to {lagrangian_epoch:0.1f}')
+        print(f'Velocity File(s): {",".join(velocity_file)}')
+        # get latitude and longitude of the original data
+        data.get_latlon(proj4_string=SRS_proj4)
+        # create an advection object with original coordinates and times
+        # calculate the number of seconds between data times and epoch
+        delta_time = (data.time - lagrangian_epoch)*24*3600*365.25
+        d = pointAdvection.advection(x=data.x,y=data.y,t=delta_time)
+        # read velocity image and trim to a buffer extent around points
+        # use a wide buffer to encapsulate advections in fast moving areas
+        if (len(velocity_file) == 1):
+            d.from_nc(velocity_file[0], buffer=Wxy)
+            lagrangian_interpolation = 'spline'
+        else:
+            vlist = [pc.grid.data().from_nc(v,field_mapping=dict(U='VX', V='VY')) \
+                for v in velocity_file]
+            d.from_list(vlist, buffer=Wxy)
+            # convert velocity times to delta times from epoch
+            d.velocity.time = (d.velocity.time - lagrangian_epoch)*24*3600*365.25
+            lagrangian_interpolation = 'linear'
+        # advect points to delta time 0
+        d.translate_parcel(integrator='RK4', method=lagrangian_interpolation, t0=0)
+        # verbose output of displacement range
+        mindist,maxdist = np.nanmin(d.distance), np.nanmax(d.distance)
+        print('Min/Max Displacement: {0:0.1f} {1:0.1f}'.format(mindist,maxdist))
+        # replace x and y with the advected coordinates
+        setattr(data,'x',np.copy(d.x0)); setattr(data,'y',np.copy(d.y0))
+        # update fields list for advected coordinates
+        setattr(data,'x0',np.copy(d.x0)); setattr(data,'y0',np.copy(d.y0))
+        data.fields.extend(['x0','y0'])
+        # reindex to coordinates that are within the domain after advection
+        domain_mask = (np.abs(data.x-xy0[0]) <= Wxy/2) & (np.abs(data.y-xy0[1]) <= Wxy/2)
+        data.index(domain_mask)
+
     avg_masks=None
     if avg_mask_directory is not None:
 
@@ -601,14 +659,14 @@ def fit_OIB(xy0, Wxy=4e4, \
 
     if year_mask_dir is not None:
         mask_data_by_year(data, year_mask_dir);
-    
-    sigma_extra_masks = {'laser': np.in1d(data.sensor, laser_sensors), 
+
+    sigma_extra_masks = {'laser': np.in1d(data.sensor, laser_sensors),
                          'DEM': ~np.in1d(data.sensor, laser_sensors)}
     # run the fit
     S=smooth_xytb_fit_aug(data=data, ctr=ctr, W=W, spacing=spacing, E_RMS=E_RMS0,
                      reference_epoch=reference_epoch, compute_E=compute_E,
                      bias_params=['time_corr','sensor'], repeat_res=repeat_res, max_iterations=max_iterations,
-                     srs_proj4=SRS_proj4, VERBOSE=True, Edit_only=Edit_only, 
+                     srs_proj4=SRS_proj4, VERBOSE=True, Edit_only=Edit_only,
                      data_slope_sensors=DEM_sensors,\
                      E_slope_bias=E_slope_bias,\
                      mask_file=mask_file,\
@@ -623,6 +681,41 @@ def fit_OIB(xy0, Wxy=4e4, \
                      sigma_extra_masks=sigma_extra_masks,\
                      sensor_grid_bias_params=sensor_grid_bias_params,\
                      converge_tol_frac_tse=0.02)
+
+    # if using a lagrangian advection scheme
+    if lagrangian:
+        # advect output coordinates to output grid times
+        print('Advect grid coordinates from Lagrangian epoch')
+        # add back reduced original coordinates to data group
+        setattr(S['data'],'x', d.x[domain_mask])
+        setattr(S['data'],'y', d.y[domain_mask])
+        # shape of smooth fit
+        ny,nx,nt = S['m']['dz'].shape
+        # replace coordinates of original lagrangian object
+        # with initial grid coordinates at lagrangian epoch
+        gridx,gridy = np.meshgrid(S['m']['dz'].x, S['m']['dz'].y)
+        d.x,d.y = (gridx.flatten(), gridy.flatten())
+        d.t = np.zeros((ny*nx))
+        # advect coordinates to each output time
+        # calculate as displacements from original grid coordinates
+        S['m']['dz'].dx = np.zeros((ny,nx,nt))
+        S['m']['dz'].dy = np.zeros((ny,nx,nt))
+        for i,delta_time in enumerate(S['m']['dz'].time):
+            # advect points to output grid time
+            t0 = (delta_time - lagrangian_epoch)*24*3600*365.25
+            d.translate_parcel(integrator='RK4', method=lagrangian_interpolation, t0=t0)
+            # reshape to output grid dimensions and
+            # calculate displacements from original coordinates
+            S['m']['dz'].dx[:,:,i] = np.reshape(d.x0, (ny,nx)) - gridx
+            S['m']['dz'].dy[:,:,i] = np.reshape(d.y0, (ny,nx)) - gridy
+            # update coordinates to advect to next field
+            # without recomputing advection from original point
+            d.x[:] = np.copy(d.x0)
+            d.y[:] = np.copy(d.y0)
+            d.t = np.zeros((ny*nx)) + np.copy(t0)
+        # update fields list for coordinate displacements
+        S['m']['dz'].fields.extend(['dx','dy'])
+
     return S, data, sensor_dict
 
 def main(argv):
@@ -639,9 +732,8 @@ def main(argv):
     parser.add_argument('--reference_epoch', type=int)
     parser.add_argument('--grid_spacing','-g', type=str, help='grid spacing:DEM (meters),dh maps xy (meters),dh_maps time (years): comma-separated, no spaces', default='250.,4000.,1.')
     parser.add_argument('--Hemisphere','-H', type=int, default=1, help='hemisphere: -1=Antarctica, 1=Greenland')
-    parser.add_argument('--base_directory','-b', type=str, help='base directory')
-    parser.add_argument('--reread_file', type=str, help='reread data from this file')
-    parser.add_argument('--out_name', '-o', type=str, help="output file name")
+    parser.add_argument('--base_directory','-b', type=lambda p: os.path.abspath(os.path.expanduser(p)), help='base directory')
+    parser.add_argument('--out_name', '-o', type=lambda p: os.path.abspath(os.path.expanduser(p)), help="output file name")
     parser.add_argument('--dzdt_lags', type=str, default='1,2,4', help='lags for which to calculate dz/dt, comma-separated list, no spaces')
     parser.add_argument('--centers', action="store_true")
     parser.add_argument('--edges', action="store_true")
@@ -652,7 +744,7 @@ def main(argv):
     parser.add_argument('--E_slope_bias', type=float, default=1.e-5)
     parser.add_argument('--data_gap_scale', type=float,  default=2500)
     parser.add_argument('--max_iterations', type=int, default=8)
-    parser.add_argument('--DEM_grid_bias_params_file', type=str, help='file containing DEM grid bias params')
+    parser.add_argument('--DEM_grid_bias_params_file', type=lambda p: os.path.abspath(os.path.expanduser(p)), help='file containing DEM grid bias params')
     parser.add_argument('--bias_nsigma_edit', type=int, default=6, help='edit points whose estimated bias is more than this value times the expected')
     parser.add_argument('--bias_nsigma_iteration', type=int, default=6, help='apply bias_nsigma_edit after this iteration')
     parser.add_argument('--spring_only', action="store_true")
@@ -662,21 +754,24 @@ def main(argv):
     parser.add_argument('--DEM_file', type=str, help='DEM file to use with the DEM_tol parameter and in slope error calculations')
     parser.add_argument('--mask_floating', action="store_true")
     parser.add_argument('--map_dir','-m', type=str)
-    parser.add_argument('--firn_directory', type=str, help='directory containing firn model')
+    parser.add_argument('--firn_directory', type=lambda p: os.path.abspath(os.path.expanduser(p)), help='directory containing firn model')
     parser.add_argument('--firn_model', type=str, help='firn model name')
     parser.add_argument('--firn_version', type=str, help='firn version')
     parser.add_argument('--rerun_file_with_firn', type=str)
     parser.add_argument('--firn_rescale', action='store_true')
     parser.add_argument('--firn_fixed', action='store_true')
-    parser.add_argument('--mask_file', type=str)
-    parser.add_argument('--geoid_file', type=str)
+    parser.add_argument('--mask_file', type=lambda p: os.path.abspath(os.path.expanduser(p)))
+    parser.add_argument('--geoid_file', type=lambda p: os.path.abspath(os.path.expanduser(p)))
     parser.add_argument('--water_mask_threshold', type=float)
-    parser.add_argument('--year_mask_dir', type=str)
-    parser.add_argument('--tide_mask_file', type=str)
-    parser.add_argument('--tide_directory', type=str)
+    parser.add_argument('--year_mask_dir', type=lambda p: os.path.abspath(os.path.expanduser(p)))
+    parser.add_argument('--tide_mask_file', type=lambda p: os.path.abspath(os.path.expanduser(p)))
+    parser.add_argument('--tide_directory', type=lambda p: os.path.abspath(os.path.expanduser(p)))
     parser.add_argument('--tide_model', type=str, help='tide model name')
-    parser.add_argument('--avg_mask_directory', type=str)
-    parser.add_argument('--calc_error_file','-c', type=str)
+    parser.add_argument('--lagrangian', action='store_true', help="Use lagrangian advection scheme")
+    parser.add_argument('--velocity_file', type=lambda p: os.path.abspath(os.path.expanduser(p)), nargs='+', help="Ice sheet velocity file(s")
+    parser.add_argument('--lagrangian_epoch', type=float, default=2000.0, help="Epoch for base time of lagrangian advection scheme")
+    parser.add_argument('--avg_mask_directory', type=lambda p: os.path.abspath(os.path.expanduser(p)))
+    parser.add_argument('--calc_error_file','-c', type=lambda p: os.path.abspath(os.path.expanduser(p)))
     parser.add_argument('--calc_error_for_xy', action='store_true')
     parser.add_argument('--avg_scales', type=str, help='scales at which to report average errors, comma-separated list, no spaces')
     parser.add_argument('--error_res_scale','-s', type=float, nargs=2, default=[4, 2], help='if the errors are being calculated (see calc_error_file), scale the grid resolution in x and y to be coarser')
@@ -708,11 +803,11 @@ def main(argv):
         args.out_name=args.calc_error_file
         in_file=args.calc_error_file
         dest_dir=os.path.dirname(args.reread_file)
-        
+
     if args.reread_file is not None:
         # get xy0 from the filename
         in_file=args.reread_file
-        
+
     if in_file is not None:
         re_match=re.compile('E(.*)_N(.*).h5').search(in_file)
         args.xy0=[float(re_match.group(ii))*1000 for ii in [1, 2]]
@@ -725,7 +820,7 @@ def main(argv):
         if not os.path.isfile(args.out_name):
             print(f"{args.out_name} not found, returning")
             return 1
-        
+
     if args.error_res_scale is not None:
         if args.calc_error_file is not None:
             for ii, key in enumerate(['z0','dz']):
@@ -745,7 +840,7 @@ def main(argv):
                     DEM_bias_params[key]=float(val.split('#')[0])
                 except Exception:
                     print("problem with DEM_bias_params line\n"+line)
-                    
+
     if not os.path.isdir(args.base_directory):
         os.mkdir(args.base_directory)
     if not os.path.isdir(dest_dir):
@@ -784,6 +879,9 @@ def main(argv):
             tide_directory=args.tide_directory, \
             tide_mask_file=args.tide_mask_file, \
             tide_model=args.tide_model, \
+            lagrangian=args.lagrangian, \
+            velocity_file=args.velocity_file, \
+            lagrangian_epoch=args.lagrangian_epoch, \
             avg_mask_directory=args.avg_mask_directory, \
             dzdt_lags=args.dzdt_lags, \
             avg_scales=args.avg_scales,\
