@@ -17,10 +17,11 @@ os.environ['OPENBLAS_NUM_THREADS']="1"
 import numpy as np
 #import matplotlib.pyplot as plt
 from LSsurf.smooth_xytb_fit_aug import smooth_xytb_fit_aug
-from LSsurf.read_ICESat2 import read_ICESat2
+from altimetryFit import read_optical_data, laser_key
 from LSsurf.matlab_to_year import matlab_to_year
 from LSsurf import fd_grid
-from surfaceChange import reread_data_from_fits
+from ATL1415 import reread_data_from_fits
+
 from LSsurf.subset_DEM_stack import subset_DEM_stack
 import pointCollection as pc
 from datetime import datetime, timedelta
@@ -83,7 +84,7 @@ def GI_files(hemisphere):
                   'LVIS':'/Volumes/insar10/ben/OIB_database/LVIS/GL/geo_index.h5',
                   'ICESat1':'/Volumes/insar10/ben/OIB_database/glas/GL/rel_634/GeoIndex.h5',
                   'ICESat2':glob.glob('/Volumes/ice3/ben/ATL06/tiles/Arctic/004/*/GeoIndex.h5'),
-                  'DEM':'/Volumes/insar7/ben/ArcticDEM/geocell_v3/GeoIndex_plus_rough.h5' };
+                  'DEM':['/Volumes/insar7/ben/ArcticDEM/geocell_v3/GeoIndex_plus_rough.h5', '/Volumes/insar7/ben/ArcticDEM/Sverdrup/filtered/GeoIndex.h5']};
     elif hemisphere==-1:
         GI_files={'ATM':'/Volumes/insar7/ben/oib_database/ATM_Qfit/Antarctica/GeoIndex.h5',
                   'LVIS':'/Volumes/insar7/ben/oib_database/LVIS/Antarctica/GeoIndex.h5',
@@ -94,6 +95,7 @@ def GI_files(hemisphere):
                   }
     return GI_files
 
+<<<<<<< HEAD:scripts/fit_OIB_aug.py
 def read_ICESat(xy0, W, gI_file, sensor=1, hemisphere=-1, DEM=None):
     #fields=[ 'IceSVar', 'deltaEllip', 'numPk', 'ocElv', 'reflctUC', 'satElevCorr',  'time',  'x', 'y', 'z']
     fields=['x','y','z','time']
@@ -318,6 +320,8 @@ def read_DEM_data(xy0, W, sensor_dict, GI_file=None, hemisphere=1, sigma_corr=20
 
     return new_D, sensor_dict
 
+=======
+>>>>>>> ab094dc (Many additions):altimetryFit/fit_OIB_aug.py
 def custom_edits(data):
     '''
     Any custom edits go here
@@ -508,6 +512,8 @@ def fit_OIB(xy0, Wxy=4e4, \
             velocity_file=None, \
             lagrangian_epoch=2000.0, \
             year_mask_dir=None, \
+            bm_scale_laser=100,\
+            bm_scale_DEM=400,\
             avg_scales=None,\
             DEM_grid_bias_params=None):
     """
@@ -543,14 +549,16 @@ def fit_OIB(xy0, Wxy=4e4, \
         data=pc.data().from_h5(reread_file, group='data')
         sensor_dict=make_sensor_dict(reread_file)
     elif reread_dirs is None:
-        bm_scale={'laser':100, 'DEM':400}
-        D, sensor_dict=read_data(xy0, W, bm_scale=bm_scale, laser_only=laser_only,\
-                                 IS2_only=IS2_only,\
-                                 mask_file=mask_file, geoid_file=geoid_file, \
-                                 mask_floating=mask_floating,\
-                                 water_mask_threshold=water_mask_threshold, \
-                                 DEM_file=DEM_file, \
-                                 hemisphere=hemisphere)
+        bm_scale={'laser':bm_scale_laser, 'DEM':bm_scale_DEM}
+        D, sensor_dict=read_optical_data(xy0, W, GI_files=GI_files(hemisphere), \
+                                SRS_proj4=get_SRS_proj4(hemisphere),\
+                                bm_scale=bm_scale, laser_only=laser_only,\
+                                IS2_only=IS2_only, \
+                                mask_file=mask_file, geoid_file=geoid_file, \
+                                mask_floating=mask_floating,\
+                                water_mask_threshold=water_mask_threshold, \
+                                DEM_file=DEM_file, \
+                                hemisphere=hemisphere)
         for ind, Di in enumerate(D):
             if Di is None:
                 continue
@@ -735,6 +743,7 @@ def main(argv):
     parser.add_argument('--base_directory','-b', type=lambda p: os.path.abspath(os.path.expanduser(p)), help='base directory')
     parser.add_argument('--out_name', '-o', type=lambda p: os.path.abspath(os.path.expanduser(p)), help="output file name")
     parser.add_argument('--dzdt_lags', type=str, default='1,2,4', help='lags for which to calculate dz/dt, comma-separated list, no spaces')
+    parser.add_argument('--prelim', action="store_true")
     parser.add_argument('--centers', action="store_true")
     parser.add_argument('--edges', action="store_true")
     parser.add_argument('--corners', action="store_true")
@@ -744,7 +753,13 @@ def main(argv):
     parser.add_argument('--E_slope_bias', type=float, default=1.e-5)
     parser.add_argument('--data_gap_scale', type=float,  default=2500)
     parser.add_argument('--max_iterations', type=int, default=8)
+<<<<<<< HEAD:scripts/fit_OIB_aug.py
     parser.add_argument('--DEM_grid_bias_params_file', type=lambda p: os.path.abspath(os.path.expanduser(p)), help='file containing DEM grid bias params')
+=======
+    parser.add_argument('--bm_scale_laser', type=float, default=100)
+    parser.add_argument('--bm_scale_DEM', type=float, default=400)
+    parser.add_argument('--DEM_grid_bias_params_file', type=str, help='file containing DEM grid bias params')
+>>>>>>> ab094dc (Many additions):altimetryFit/fit_OIB_aug.py
     parser.add_argument('--bias_nsigma_edit', type=int, default=6, help='edit points whose estimated bias is more than this value times the expected')
     parser.add_argument('--bias_nsigma_iteration', type=int, default=6, help='apply bias_nsigma_edit after this iteration')
     parser.add_argument('--spring_only', action="store_true")
@@ -790,6 +805,8 @@ def main(argv):
     reread_dirs=None
     if args.centers:
         dest_dir = args.base_directory+'/centers'
+    if args.prelim:
+        dest_dir = args.base_directory+'/prelim'
     if args.edges or args.corners:
         reread_dirs=[args.base_directory+'/centers']
         dest_dir = args.base_directory+'/edges'
@@ -863,6 +880,8 @@ def main(argv):
             laser_only=args.laser_only, \
             IS2_only=args.IS2_only, \
             spring_only=args.spring_only, \
+            bm_scale_laser=args.bm_scale_laser, \
+            bm_scale_DEM=args.bm_scale_DEM,\
             firn_directory=args.firn_directory,\
             firn_version=args.firn_version,\
             firn_correction=args.firn_model,\
