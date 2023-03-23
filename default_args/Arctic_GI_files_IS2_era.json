@@ -1,0 +1,4 @@
+{
+    "ICESat2": "/Volumes/ice1/ben/ATL06/tiles/Arctic/005/*/GeoIndex.h5",
+    "DEM": "/Volumes/insar10/ben/ArcticDEM/v2*/*/GeoIndex.h5"
+}

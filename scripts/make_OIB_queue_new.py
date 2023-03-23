@@ -20,7 +20,7 @@ env_str=''
 error_str=''
 #error_str=' --calc_error_for_xy'
 
-prog='fit_OIB_aug.py'
+prog='fit_altimetry.py'
 
 # account for a bug in argparse that misinterprets negative agruents
 argv=sys.argv
@@ -39,10 +39,11 @@ if len(sys.argv) > 2:
     defaults_file=os.path.abspath(sys.argv[2])
 
 
-if args.step not in ['centers', 'edges','corners']:
+if args.step not in ['prelim','matched']:
     raise(ValueError('argument not known'))
     sys.exit()
 
+XR, YR= [ None, None ]
 if args.region_file is not None:
     line_re=re.compile('(..)\s*=\s*\[\s*(\S+),\s*(\S+)\s*]')
     temp={}
@@ -64,8 +65,13 @@ with open(args.defaults_file,'r') as fh:
 #sys.exit()
 
 Wxy=float(defaults['-W'])
-Hxy=Wxy/2
-
+if "--tile_spacing" in defaults:
+    Hxy = float(defaults['--tile_spacing'])
+else:
+    Hxy=Wxy/2
+#print(Hxy)
+    
+    
 mask_G=pc.grid.data().from_geotif(defaults['--mask_file'].replace('100m','1km'))
 mask_G.z=snd.binary_dilation(mask_G.z, structure=np.ones([20, 1], dtype='bool'))
 mask_G.z=snd.binary_dilation(mask_G.z, structure=np.ones([1, 20], dtype='bool'))
@@ -81,7 +87,7 @@ step_dir=out_dir+'/'+args.step
 if not os.path.isdir(step_dir):
     os.mkdir(step_dir)
 
-if args.step=='centers':
+if args.step=='centers' or args.step=='prelim':
     delta_x=[0]
     delta_y=[0]
     symbol='r*'
@@ -98,9 +104,14 @@ x0=np.unique(np.round(mask_G.x/Hxy)*Hxy)
 y0=np.unique(np.round(mask_G.y/Hxy)*Hxy)
 x0, y0 = np.meshgrid(x0, y0)
 
+
+
 xg=x0.ravel()
 yg=y0.ravel()
-good=(np.abs(mask_G.interp(xg, yg)-1)<0.1) & (np.mod(xg, Wxy)==0) & (np.mod(yg, Wxy)==0)
+if args.step in ['centers','edges','corners']:
+    good=(np.abs(mask_G.interp(xg, yg)-1)<0.1) & (np.mod(xg, Wxy)==0) & (np.mod(yg, Wxy)==0)
+else:
+    good=(np.abs(mask_G.interp(xg, yg)-1)<0.1) & (np.mod(xg, Hxy)==0) & (np.mod(yg, Hxy)==0)
 
 if XR is not None:
     good &= (xg>=XR[0]) & (xg <= XR[1]) & (yg > YR[0]) & (yg < YR[1])
@@ -108,6 +119,9 @@ if XR is not None:
 #mask_G.show()
 xg=xg[good]
 yg=yg[good]
+
+#print(np.unique(xg.ravel()))
+#print(np.unique(yg.ravel()))
 #[xg, yg]=pad_bins([xg, yg], 2, [Wxy/2, Wxy/2])
 
 queued=[];
@@ -124,7 +138,7 @@ for xy0 in zip(xg, yg):
             #if np.sqrt((xy1[0]-320000.)**2 + (xy1[1]- -2520000.)**2) > 2.e5:
             #    continue
             #plt.plot(xy1[0], xy1[1],symbol)
-            cmd='%s %d %d --%s @%s ' % (prog, xy1[0], xy1[1], args.step, defaults_file)
+            cmd='%s --xy0 %d %d --%s @%s ' % (prog, xy1[0], xy1[1], args.step, defaults_file)
             print(env_str + cmd)# +';'+cmd+error_str)
             
 
