@@ -20,7 +20,7 @@ env_str=''
 error_str=''
 #error_str=' --calc_error_for_xy'
 
-prog='/home/ben/git_repos/AA_delta_z/fit_OIB_aug.py'
+prog='fit_OIB_aug.py'
 
 # account for a bug in argparse that misinterprets negative agruents
 argv=sys.argv
@@ -124,7 +124,7 @@ for xy0 in zip(xg, yg):
             #if np.sqrt((xy1[0]-320000.)**2 + (xy1[1]- -2520000.)**2) > 2.e5:
             #    continue
             #plt.plot(xy1[0], xy1[1],symbol)
-            cmd='python3 %s %d %d --%s @%s ' % (prog, xy1[0], xy1[1], args.step, defaults_file)
+            cmd='%s %d %d --%s @%s ' % (prog, xy1[0], xy1[1], args.step, defaults_file)
             print(env_str + cmd)# +';'+cmd+error_str)
             
 
