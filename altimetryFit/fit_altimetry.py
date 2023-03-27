@@ -23,7 +23,7 @@ import numpy as np
 #import matplotlib.pyplot as plt
 from LSsurf.smooth_xytb_fit_aug import smooth_xytb_fit_aug
 from LSsurf import fd_grid
-from ATL1415 import reread_data_from_fits
+from altimetryFit.reread_data_from_fits import reread_data_from_fits
 import pointCollection as pc
 from pyTMD import compute_tide_corrections
 from SMBcorr import assign_firn_variable

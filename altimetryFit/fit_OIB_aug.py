@@ -20,8 +20,8 @@ from LSsurf.smooth_xytb_fit_aug import smooth_xytb_fit_aug
 from altimetryFit import read_optical_data, laser_key
 from LSsurf.matlab_to_year import matlab_to_year
 from LSsurf import fd_grid
-from ATL1415 import reread_data_from_fits
 
+from .reread_data_from_fits import reread_data_from_fits
 from LSsurf.subset_DEM_stack import subset_DEM_stack
 import pointCollection as pc
 from datetime import datetime, timedelta
