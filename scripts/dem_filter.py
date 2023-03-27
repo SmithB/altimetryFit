@@ -5,9 +5,7 @@ Created on Thu May  9 21:52:23 2013
 
 @author: ben
 
-dem_cull.py
-parameters:
-    input_file, output_file, smooth_scale, smooth_tol, slope_tol, R_tol, dliate_by
+dem_filter.py
 """
 
 import argparse
@@ -18,29 +16,9 @@ import scipy.ndimage as snd
 import sys, os, time
 blocksize=4096
 #from altimetryFit import check_obj_memory
-import gc
+import re
 
-from osgeo import gdal
-gdal.SetCacheMax(1024*1024*1024)
-
-# def mem_by_class():
-#     objs = gc.get_objects()
-#     mems = [(obj.__class__, sys.getsizeof(obj)) for obj in objs]
-#     class_mem_count = {}
-#     for mem in mems:
-#         if mem[0] not in class_mem_count:
-#             class_mem_count[mem[0]] = [0, 0]
-#         class_mem_count[mem[0]][0] += mem[1]
-#         class_mem_count[mem[0]][1] += 1
-
-#     mems = [ii[0] for ii in class_mem_count.values()]
-#     classes = list(class_mem_count.keys())
-
-#     ind=np.argsort(mems)[::-1]
-#     print("memory usage by_class:")
-#     for ii in ind:
-#         if mems[ii] > 1.e6:
-#             print(f'\t{classes[ii]}:, {mems[ii]/1.e6} M, N={class_mem_count[classes[ii]]} ')
+gdal.SetCacheMax(1024*1024*256)
 
 def smooth_corrected(z, mask, w_smooth):
      mask1=snd.gaussian_filter(np.float32(mask), w_smooth, mode="constant", cval=0)
@@ -65,7 +43,7 @@ def parse_input_args(args):
         input arguments formatted as a namespace
 
     '''
-    
+
     parser = argparse.ArgumentParser(description='cull out spurious values from a DEM', \
                                      fromfile_prefix_chars='@')
     parser.add_argument('input_file')
@@ -75,28 +53,82 @@ def parse_input_args(args):
     parser.add_argument('--slope_tol', '-m', type=float, default=10*np.pi/180.)
     parser.add_argument('--R_tol','-r', type=float, default=5.)
     parser.add_argument('--erode_By','-b', type=float, default=1.)
-    parser.add_argument('--simplify_by', type=float, default=None) 
+    parser.add_argument('--simplify_by', type=float, default=None)
     parser.add_argument('--decimate_by','-d', type=int, default=1.)
     parser.add_argument('--target_resolution', '-R', type=float, default=None)
     parser.add_argument('--error_RMS_scale','-e', type=float, default=64)
     parser.add_argument('--geolocation_error','-g', type=float, default=5)
     parser.add_argument('--pgc_masks','-p', action='store_true')
+    parser.add_argument('--pgc_url_file',type=str)
     parser.add_argument('--facet_tol', '-f', type=float, default=None)
     return parser.parse_args()
 
+def get_pgc_masks(filename, pgc_url_file):
+    import requests
+    import shutil
 
-def mask_pgc( this_bounds, mask, pgc_subs, dec):
+    pgc_re=re.compile('(SETSM_.*_seg\d+)')
+    pgc_base=pgc_re.search(filename).group(1)
+
+    downscale_re=re.compile('(_(\d+)m).tif')
+    m_down = downscale_re.search(filename)
+    if m_down is None:
+        resample=False
+        resample_str=''
+    else:
+        resample_str = m_down.group(1)
+        pgc_re=re.compile('(SETSM_.*_seg\d+)')
+        print(filename)
+        pgc_base=pgc_re.search(filename).group(1)
+
+    out_files={}
+    for extension in ['_matchtag','_bitmask']:
+        out_files[extension] = os.path.join(os.path.dirname(filename), pgc_base+extension+resample_str+'.tif')
+
+    if os.path.isfile(out_files['_matchtag']) and os.path.isfile(out_files['_bitmask']):
+        return out_files
+
+    pgc_url=None
+    with open(pgc_url_file,'r') as fh:
+        for line in fh:
+            if pgc_base in line:
+                pgc_url=line.rstrip()
+                break
+
+    # complain if no entry is in the PGC url file
+    if pgc_url is None:
+        raise(IndexError(f'No PGC url found in {pgc_url_file} for {pgc_base}'))
+
+    # Code for downloading the full-res masks(not necessary - see the option to read the url with gdal.Warp
+    #for extension in ['_bitmask','_matchtag']:
+    #    with requests.get(pgc_url+extension+'.tif', stream=True) as r:
+    #        with open(os.path.join(os.path.dirname(filename), pgc_base+extension+'.tif'),'wb') as fh:
+    #            shutil.copyfileobj(r.raw, fh)
+    II=gdal.Info(filename, format='json')
+    if resample_str is not None:
+        for extension, resamp_alg in zip(['_matchtag','_bitmask'],['min','max']):
+
+            warpoptions=gdal.WarpOptions(format="GTiff", outputBounds=II['cornerCoordinates']['lowerLeft']+II['cornerCoordinates']['upperRight'],
+                                 creationOptions=None,
+                resampleAlg='min', xRes=np.abs(II['geoTransform'][1]), yRes=np.abs(II['geoTransform'][-1]), srcNodata=255, dstNodata=255)
+            gdal.Warp(out_files[extension], pgc_url+extension+'.tif',options=warpoptions)
+            #plt.figure()
+            #pc.grid.data().from_geotif(out_file).show()
+
+    return out_files
+
+def mask_pgc( this_bounds, mask, pgc_subs, dec ):
     for key, sub in pgc_subs.items():
         sub.setBounds(*this_bounds, update=True)
-    mask *= np.squeeze((pgc_subs['bitmask'].z == 0) | (pgc_subs['bitmask'].z == 2))
+    mask *= np.squeeze((pgc_subs['_bitmask'].z == 0) | (pgc_subs['_bitmask'].z == 2))
     if dec > 1:
         # skip erosion if the mask is all valid
-        if not np.all(pgc_subs['matchtag'].z):
+        if not np.all(pgc_subs['_matchtag'].z):
             mask *= snd.binary_erosion(
-                snd.binary_erosion(np.squeeze(pgc_subs['matchtag'].z), np.ones((1, dec), dtype=bool)),
+                snd.binary_erosion(np.squeeze(pgc_subs['_matchtag'].z), np.ones((1, dec), dtype=bool)),
                 np.ones((dec,1), dtype=bool))
     else:
-        mask &= pgc_subs['bitmask'].z
+        mask &= pgc_subs['_bitmask'].z
 
 def filter_dem(*args, **kwargs):
 
@@ -115,12 +147,12 @@ def filter_dem(*args, **kwargs):
     noData=band.GetNoDataValue()
     if noData is None:
         noData=0.
-    
+
     dec=int(args.decimate_by)
     xform_in=np.array(ds.GetGeoTransform())
     dx=xform_in[1]
     #ds=None
-    
+
     if args.target_resolution is not None:
         dec_low=np.floor(args.target_resolution/dx)
         dec_high=np.ceil(args.target_resolution/dx)
@@ -131,14 +163,14 @@ def filter_dem(*args, **kwargs):
         print("---chose decimation value based on target resolution: %d" % dec)
     nX=band.XSize;
     nY=band.YSize;
-    
+
     xform_out=xform_in.copy()
     xform_out[1]=xform_in[1]*dec
     xform_out[5]=xform_in[5]*dec
     if np.mod(dec,2)==0:   # shift output origin by 1/2 pixel if dec is even
         xform_out[0]=xform_in[0]+xform_in[1]/2
         xform_out[3]=xform_in[3]+xform_in[5]/2
-    
+
     nX_out=int(nX/dec)
     nY_out=int(nY/dec)
     if args.error_RMS_scale is not None:
@@ -146,54 +178,56 @@ def filter_dem(*args, **kwargs):
         w_error=int(args.error_RMS_scale/dx/dec)
     else:
         out_bands=[1]
-    
+
     if os.path.isfile(args.output_file):
         print("output_file %s exists, deleting" % args.output_file)
         os.remove(args.output_file)
-    
+
     co=["COMPRESS=LZW", "TILED=YES", "PREDICTOR=3"]
     outDs = driver.Create(args.output_file, nX_out, nY_out, len(out_bands), gdalconst.GDT_Float32, options=co)
-    
+
     argDict=vars(args)
     for key in argDict:
         if argDict[key] is not None:
             print("\t%s is %s" %(key, str(argDict[key])))
             outDs.SetMetadataItem("dem_filter_"+key, str(argDict[key]))
-    
+
     if args.smooth_scale is not None:
         # smoothing kernel width, in pixels
         w_smooth=args.smooth_scale/dx
-    
+
     if args.erode_By is not None:
         N_erode=np.ceil(args.erode_By/dx)
         xg,yg=np.meshgrid(np.arange(0, N_erode)-N_erode/2, np.arange(0, N_erode)-N_erode/2)
         k_erode=(xg**2 + yg**2) <= N_erode/2.
-    
+
     if args.simplify_by is not None:
          N_simplify=np.ceil(args.simplify_by/dx)
          xg,yg=np.meshgrid(np.arange(0, N_simplify)-N_simplify/2, np.arange(0, N_simplify)-N_simplify/2)
          k_simplify=(xg**2 + yg**2) <= N_simplify/2.
-        
+
     if args.facet_tol is not None:
         xxg, yyg=np.meshgrid(np.arange(-8., 9), np.arange(-8., 9.))
         opening_kernel=(xxg**2+yyg**2 <= 25)
         closing_kernel=(xxg**2+yyg**2 <= 64)
-    
+
     pad=np.max([1, int(2.*(w_smooth+N_erode)/dec)]);
     if w_error is not None:
          pad=np.max([1, int(2.*w_error+2.*(w_smooth+N_erode)/dec)])
-    
+
     stride=int(blocksize/dec)
     in_sub=im_subset(0, 0, nX, nY, ds, pad_val=0, Bands=[1])
-    
+
     if args.pgc_masks:
         pgc_subs={}
-        for key in ['matchtag','bitmask']:
-            sub_ds=gdal.Open(args.input_file.replace('_dem.tif','_'+key+'.tif'))
+        pgc_files = get_pgc_masks(args.input_file, args.pgc_url_file)
+
+        for key in ['_matchtag','_bitmask']:
+            sub_ds=gdal.Open(pgc_files[key])
             pgc_subs[key] = im_subset(0, 0, nX, nY, sub_ds, pad_val=0, Bands=[1])
-    
+
     last_time=time.time()
-    
+
     for sub_count, out_sub in enumerate(im_subset(0, 0,  nX_out,  nY_out, outDs, pad_val=0, Bands=out_bands, stride=stride, pad=pad)):
         this_bounds=[out_sub.c0*dec, out_sub.r0*dec, out_sub.Nc*dec, out_sub.Nr*dec]
         #ds=gdal.Open(args.input_file);
@@ -206,51 +240,51 @@ def filter_dem(*args, **kwargs):
         mask=np.ones_like(in_sub.z[0,:,:])
         mask[np.isnan(in_sub.z[0,:,:])]=0
         mask[in_sub.z[0,:,:]==noData]=0
-        
+
         if args.pgc_masks:
             mask_pgc( this_bounds, mask, pgc_subs, dec)
 
         out_temp=np.zeros([len(out_bands), stride, stride])
-    
+
         if np.all(mask.ravel()==0):
             out_temp=out_temp+np.NaN
             out_sub.z=out_temp
             out_sub.setBounds(out_sub.c0+pad, out_sub.r0+pad, out_sub.Nc-2*pad, out_sub.Nr-2*pad)
             out_sub.writeSubsetTo(out_bands, out_sub)
             continue
-    
+
         if (args.R_tol is not None) | (args.facet_tol is not None):
             lap=np.abs(snd.laplace(in_sub.z[0,:,:], mode='constant', cval=0.0))
-    
+
         if args.R_tol is not None:
             mask[lap>args.R_tol]=0
-    
+
         if args.facet_tol is not None:
             mask1=mask.copy()
             mask1[lap < args.facet_tol]=0
             mask1=snd.binary_closing(snd.binary_opening(mask1, structure=opening_kernel), structure=closing_kernel)
             #mask1=snd.binary_erosion(mask1, structure=simplify_kernel);
             mask[mask1==0]=0
-    
+
         if args.smooth_scale is not None:
             zs, mask2 = smooth_corrected(z, mask, w_smooth)
             mask[np.abs(in_sub.z[0,:,:]-zs)>args.smooth_tol]=0.
-    
+
         if args.slope_tol is not None:
              gx, gy=np.gradient(zs, dx, dx)
              mask[gx**2+gy**2 > args.slope_tol**2]=0
              z[mask==0]=0
-    
+
         if args.simplify_by is not None:
              mask1=mask.copy()
              mask1=snd.binary_erosion(mask1, k_simplify)
              mask1=snd.binary_dilation(mask1, k_simplify)
              mask[mask1==0]=0
-           
+
         if args.erode_By is not None:
             mask=snd.binary_erosion(mask, k_erode)
             z[mask==0]=0
-    
+
         if args.decimate_by is not None:  # smooth again and decimate
             zs, mask1=smooth_corrected(z, mask, w_smooth)
             zs[mask1 < .25]=0
@@ -267,7 +301,7 @@ def filter_dem(*args, **kwargs):
             z=zs
             mask=mask[int(dec/2.+0.5)::dec, int(dec/2.+0.5)::dec]
             z[mask==0]=0
-    
+
         if args.geolocation_error is not None:
             gx, gy=np.gradient(zs, dec*dx, dec*dx)
             mask1=snd.binary_erosion(mask, np.ones((3,3)))
@@ -282,7 +316,7 @@ def filter_dem(*args, **kwargs):
             e2_geo[mask==0]=0
         else:
             e2_geo=np.zeros_like(zs)
-    
+
         if args.error_RMS_scale is not None:
             zss, mask2=smooth_corrected(z, mask, w_error)
             r2s, dummy=smooth_corrected(e2_geo+(zss-z)**2, mask, w_error)
@@ -292,7 +326,7 @@ def filter_dem(*args, **kwargs):
             out_temp[1,:,:]=error_est[pad:-(pad), pad:-(pad)]
         else:
             out_temp[1,:,:]=e2_geo[pad:-pad, pad:-pad]
-    
+
         z[mask==0]=np.NaN
         out_temp[0,:,:]=z[pad:-(pad), pad:-(pad)]
 
