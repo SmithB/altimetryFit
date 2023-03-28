@@ -11,6 +11,7 @@ scripts = [os.path.join('scripts',f) for f in os.listdir('scripts')]
 scripts = [os.path.join('scripts',f) for f in os.listdir('scripts') if not (f[0]=='.' or f[-1]=='~' or os.path.isdir(os.path.join('scripts', f)))] +\
     [os.path.join('altimetryFit', f) for f in ['fit_OIB_aug.py', 'fit_altimetry.py'] +\
      [os.path.join('register_DEMs/', f) for f in ['register_WV_DEM_with_IS2.py', 'register_WV_DEM_with_CS2.py' ]]
+
     ]
 print(scripts)
 setup(
