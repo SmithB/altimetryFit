@@ -35,6 +35,15 @@ import glob
 import json
 import re
 
+
+def set_memory_limit(max_bytes):
+    '''
+    Limit the amount of memory the program can use.
+    '''
+    soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+    resource.setrlimit(resource.RLIMIT_AS, (max_bytes, hard))
+
+
 def make_sensor_dict(h5_file):
     '''
     make a dictionary of sensors a fit output file.
@@ -447,9 +456,13 @@ def main(argv):
     parser.add_argument('--calc_error_for_xy', action='store_true')
     parser.add_argument('--avg_scales', type=str, help='scales at which to report average errors, comma-separated list, no spaces')
     parser.add_argument('--error_res_scale','-s', type=float, nargs=2, default=[4, 2], help='if the errors are being calculated (see calc_error_file), scale the grid resolution in x and y to be coarser')
+    parser.add_argument('--max_mem', type=float, default=15., help='maximum memory the program is allowed to use, in GB.')
     args, unk=parser.parse_known_args()
     print("unknown arguments:"+str(unk))
 
+    
+    set_memory_limit(int(args.max_mem*1024*1024*1024))
+    
     if args.avg_scales is not None:
         args.avg_scales = [int(temp) for temp in args.avg_scales.split(',')]
     args.grid_spacing = [float(temp) for temp in args.grid_spacing.split(',')]
