@@ -56,6 +56,9 @@ def eval_DEM_shift(delta, D_pt, DEM, sigma_min=0, iterations=1, mask=None):
 
     dh = D_pt.z - DEM.interp(D_pt.x+delta[0], D_pt.y+delta[1])
 
+    if 'DEM_tide' in D_pt.fields:
+        dh += D_pt.DEM_tide
+
     G=np.c_[np.ones_like(D_pt.x).ravel(),\
             (D_pt.x.ravel()-np.nanmean(D_pt.x))/1000,\
             (D_pt.y.ravel() - np.nanmean(D_pt.y))/1000, \
