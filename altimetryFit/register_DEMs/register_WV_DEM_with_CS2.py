@@ -10,7 +10,6 @@ import re
 from datetime import date
 import sys
 from pyTMD import compute_tide_corrections
-import from altimetryFit.register_DEMs as rd
 from dateutil import parser
 import json
 
@@ -34,10 +33,8 @@ def read_poca_data(bounds, t_DEM, tile_dir, max_dt=1):
     pad = np.array([-1.e4, 1.e4])
     for year, dirname in year_dir.items():
         if (np.abs(t_DEM-year) < max_dt) or (np.abs(t_DEM-(year+1)) < max_dt):
-            print(dirname)
             GI_files=glob.glob(os.path.join(dirname, '*', 'POCA', 'GeoIndex.h5'))
             for index_file in GI_files:   
-                print(index_file)
                 D += [pc.data().from_list(pc.geoIndex().from_file(index_file).query_xy_box(bounds[0]+pad, \
                                bounds[1]+pad, fields=fields))]
 
@@ -50,7 +47,7 @@ def read_poca_data(bounds, t_DEM, tile_dir, max_dt=1):
     # remove suspect returns
     D.index((D.power > 5e-17) & 
             (D.power < 5e-13) & 
-            (np.abs(t_DEM-D.time) < max_dt)
+            (np.abs(t_DEM-D.time) < max_dt))
     
     # remap fieldnames, assign errors
     D.assign({
@@ -83,11 +80,11 @@ def calc_tide(D_pt, t_DEM, directory=None, model=None, mask_file=None):
 
 def get_DEM_date(filename):
     meta_file=filename.replace('_dem_40m_filt.tif','_meta.txt')
-    print(['meta_file', meta_file])
+
     with open(meta_file,'r') as fh:
         for line in fh:
             if "Image_1_Acquisition_time=" in line:
-                print(line)
+
                 timestr = line.split('=')[1]
                 
                 break
@@ -99,6 +96,7 @@ def output_filenames(filename):
     
     out_files={'h5': out_base+'_CS2_meta.h5',
                'json':out_base+'_CS2_meta.json'}
+    return out_files
     
 def make_CS2_queue(args):
     files=glob.glob(args.queue_wc)
@@ -115,8 +113,8 @@ def make_CS2_queue(args):
     
     with open('register_queue.txt','w') as fh:
         for file in files:
-            out_h5=get_out_file(file)+'_CS2_meta.h5'
-            if os.path.isfile(out_file):
+            out_txt=output_filenames(file)['json']
+            if os.path.isfile(out_txt):
                 continue
             fh.write(f'{prog} --DEM_file {file} '+ arg_string + '\n')
     sys.exit(0)
@@ -139,7 +137,7 @@ def write_json_output( D_out, json_file ):
         json.dump(D_out, fh, indent=4)
 
 def register_one_DEM(DEM_file=None, tile_dir=None,
-                     mask_file=None, max_dist=20,
+                     mask_file=None,
                      max_dt = 1,
                      tide_model=None, tide_directory=None,
                      tide_mask_file=None,
@@ -159,6 +157,8 @@ def register_one_DEM(DEM_file=None, tile_dir=None,
     DEM=pc.grid.data().from_geotif(DEM_file)
     DEM.z[DEM.z==0]=np.NaN
     DEM.t=get_DEM_date(DEM.filename)
+
+    out_files =  output_filenames(DEM.filename)
     
     XR, YR= [[np.floor(ii[0]/1.e4)*1.e4, np.ceil(ii[1]/1.e4)*1.e4] for ii in DEM.bounds()]
     for ii in [XR, YR]:
@@ -179,7 +179,7 @@ def register_one_DEM(DEM_file=None, tile_dir=None,
         if 'x' in D_pt.fields:
             D_pt.assign({'r': np.zeros_like(D_pt.x)+np.NaN})
         print('register_WV_DEM_with_IS2.py: not enough valid points found for ' + DEM.filename)
-        write_output(D_out, None, DEM.filename)
+        write_json_output( D_out, out_files['json'])
         return
     
     D_pt.sigma = np.sqrt(D_pt.sigma**2+pc.grid.data()\
@@ -195,19 +195,22 @@ def register_one_DEM(DEM_file=None, tile_dir=None,
     sigma0, sigma_scaled0, mask0, m0, r0, dh0 = rd.eval_DEM_shift([0,0], D_pt, DEM, sigma_min=sigma_min, iterations=50, mask=mask0)
 
     mask0, r0 = rd.edit_by_day(mask0, D_pt, DEM, r0, dh_max=5, sigma_min=0.1)
+    D_pt.assign({'r0':r0})
     D_pt=D_pt[mask0]
-    
-    sigma, sigma_scaled, mask, m, r, dh  = rd.eval_DEM_shift([0,0], D_pt, DEM, sigma_min=sigma_min, iterations=50, mask=mask0)
+    mask0=mask0[mask0]
 
+    print("starting second iteration")
+    sigma, sigma_scaled, mask, m, r, dh  = rd.eval_DEM_shift([0,0], D_pt, DEM, sigma_min=sigma_min, iterations=50, mask=mask0)
     D_pt.assign({'r':r})
+
 
     if np.sum(mask) < 55:
         print('register_WV_DEM_with_IS2.py: not enough valid points found for ' + DEM.filename)
-        write_output(D_out, None, DEM.filename)
+        write_json_output( D_out, out_files['json'])
         return
     
-    D_out={'x':np.mean(D_pt.x),
-           'y':np.mean(D_pt.y),
+    D_out={'x':np.float64(np.mean(D_pt.x)),
+           'y':np.float64(np.mean(D_pt.y)),
            'N':D_pt.size,
            'N_days': len(np.unique(np.round(D_pt.t*365.25))),
            'sigma':sigma,
@@ -217,25 +220,24 @@ def register_one_DEM(DEM_file=None, tile_dir=None,
            'dh_dt':m[3],
            'delta_h':m[0]}
 
-    D_pt.assign({'r':r,
-                'r0':r0})
     
-    D_BM=calc_blockmedians(D_pt, mask0, scale=2000)
+    D_BM = rd.calc_blockmedians(D_pt, mask, scale=2000)
     
-    out_files =  output_filenames(DEM.filename)
     if save_data:
-        write_h5_output(D_out, D_BM, out_files[h5])
+        print("writing h5")
+        write_h5_output(D_out, D_BM, out_files['h5'])
 
-    write_json_output( DEM_file, out_files['json'])
-    return delta_best, m, D_pt, DEM, D_out, D_BM, R_of_delta, [sigma0, sigma], [sigma_scaled0, sigma_scaled]
+    print("Writing json")
+    write_json_output( D_out, out_files['json'])
+    print("Done writing")
+    return m, D_pt, DEM, D_out, D_BM,  sigma, sigma_scaled
 
 def main():
 
     import argparse
-    parser=argparse.ArgumentParser(description='Find the best vertical offset for a DEM relative to a set of altimetry data')
+    parser=argparse.ArgumentParser(description='Find the best vertical offset for a DEM relative to a set of altimetry data', fromfile_prefix_chars='@')
     parser.add_argument("--DEM_file", '-d', type=str)
     parser.add_argument("--tile_dir", type=str)
-    parser.add_argument("--max_dist", type=float, default=32)
     parser.add_argument("--sigma_min", type=float, default=0.1)
     parser.add_argument("--sigma_max", type=float, default=5)
     parser.add_argument("--tide_directory", type=str)
@@ -246,7 +248,7 @@ def main():
     args=parser.parse_args()
 
     if args.queue_wc is not None:
-        make_queue(args)
+        make_CS2_queue(args)
         sys.exit(0)
 
     register_one_DEM(**{key:val for key, val in vars(args).items() if val is not None and key not in ['queue_wc']})
