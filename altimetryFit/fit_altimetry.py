@@ -259,6 +259,7 @@ def fit_altimetry(xy0, Wxy=4e4, \
             tide_model='CATS2008', \
             year_mask_dir=None, \
             avg_scales=None,\
+            bias_params=['time_corr','sensor','spot'],\
             DEM_grid_bias_params=None):
     """
         Wrapper for smooth_xytb_fit_aug that can find data and set the appropriate parameters
@@ -309,7 +310,7 @@ def fit_altimetry(xy0, Wxy=4e4, \
                 if field not in Di.fields:
                     Di.assign({field:np.zeros_like(Di.x)+np.NaN}) 
                 
-        data=pc.data(fields=['x','y','z','time','sigma','sigma_corr','slope_mag', 'sensor','spot', 'rgt','cycle']).from_list(D)
+        data=pc.data(fields=['x','y','z','time','sigma','sigma_corr','slope_mag', 'sensor','spot', 'rgt','cycle','BP']).from_list(D)
         data.assign({'day':np.floor(data.time*365.25)})
         if extra_error is not None:
             data.sigma[data.time < 2010] = np.sqrt(data.sigma[data.time<2010]**2 +extra_error**2)
@@ -351,6 +352,7 @@ def fit_altimetry(xy0, Wxy=4e4, \
             print("for %s found %d data" %(sensor, np.sum(data.sensor==val)))
     print("for DEMs, found %d data" % np.sum(np.in1d(data.sensor, np.array(DEM_sensors))))
 
+    sensor_grid_bias_params=None
     if DEM_grid_bias_params is not None:
         sensor_grid_bias_params=[]
         for sensor in DEM_sensors:
@@ -377,9 +379,11 @@ def fit_altimetry(xy0, Wxy=4e4, \
     sigma_extra_masks = {'laser': np.in1d(data.sensor, laser_sensors), 
                          'DEM': ~np.in1d(data.sensor, laser_sensors)}
     # run the fit
+    print("="*50)
+    print("about to run smooth_xytb_fit_aug with params="+str(bias_params))
     S=smooth_xytb_fit_aug(data=data, ctr=ctr, W=W, spacing=spacing, E_RMS=E_RMS0,
                      reference_epoch=reference_epoch, compute_E=compute_E,
-                     bias_params=['time_corr','sensor','spot'],
+                     bias_params=bias_params,
                      repeat_res=repeat_res, max_iterations=max_iterations,
                      srs_proj4=SRS_proj4, VERBOSE=True, Edit_only=Edit_only, 
                      data_slope_sensors=DEM_sensors,\
@@ -418,15 +422,13 @@ def main(argv):
     parser.add_argument('--out_name', '-o', type=str, help="output file name")
     parser.add_argument('--dzdt_lags', type=str, default='1,2,4', help='lags for which to calculate dz/dt, comma-separated list, no spaces')
     parser.add_argument('--prelim', action="store_true")
-    parser.add_argument('--centers', action="store_true")
-    parser.add_argument('--edges', action="store_true")
-    parser.add_argument('--corners', action="store_true")
     parser.add_argument('--E_d2zdt2', type=float, default=5000)
     parser.add_argument('--E_d2z0dx2', type=float, default=0.02)
     parser.add_argument('--E_d3zdx2dt', type=float, default=0.0003)
     parser.add_argument('--E_slope_bias', type=float, default=1.e-5)
     parser.add_argument('--data_gap_scale', type=float,  default=2500)
     parser.add_argument('--max_iterations', type=int, default=8)
+    parser.add_argument('--bias_params', type=str, nargs='+', default=['time_corr','sensor','spot'])
     parser.add_argument('--DEM_grid_bias_params_file', type=str, help='file containing DEM grid bias params')
     parser.add_argument('--bias_nsigma_edit', type=int, default=6, help='edit points whose estimated bias is more than this value times the expected')
     parser.add_argument('--bias_nsigma_iteration', type=int, default=6, help='apply bias_nsigma_edit after this iteration')
@@ -479,14 +481,6 @@ def main(argv):
     reread_dirs=None
     if args.prelim:
         dest_dir = args.base_directory+'/prelim'
-    if args.centers:
-        dest_dir = args.base_directory+'/centers'
-    if args.edges or args.corners:
-        reread_dirs=[args.base_directory+'/centers']
-        dest_dir = args.base_directory+'/edges'
-    if args.corners:
-        reread_dirs += [args.base_directory+'/edges']
-        dest_dir = args.base_directory+'/corners'
 
     in_file=None
     if args.calc_error_file is not None:
@@ -516,6 +510,9 @@ def main(argv):
         if args.calc_error_file is not None:
             for ii, key in enumerate(['z0','dz']):
                 spacing[key] *= args.error_res_scale[ii]
+
+    if args.bias_params is not None and " " in args.bias_params[0]:
+        args.bias_params=args.bias_params[0].split(" ")
 
     DEM_bias_params=None
     if args.DEM_grid_bias_params_file is not None:
@@ -549,6 +546,7 @@ def main(argv):
             max_iterations=args.max_iterations, \
             bias_nsigma_edit=args.bias_nsigma_edit,
             bias_nsigma_iteration=args.bias_nsigma_iteration,\
+            bias_params=args.bias_params,\
             hemisphere=args.Hemisphere, reread_dirs=reread_dirs, \
             out_name=args.out_name, \
             GI_files=geoIndex_dict,\
