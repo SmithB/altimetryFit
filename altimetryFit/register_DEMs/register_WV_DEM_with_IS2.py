@@ -4,23 +4,19 @@
 import os
 import pointCollection as pc
 import numpy as np
-import scipy.ndimage as snd
 import glob
 import re
-from datetime import date
+import json
 import sys
 
-def WV_date(filename):
-    date_re=re.compile(r'\d\d.*_(2\d\d\d)(\d\d)(\d\d)_')
-    m=date_re.search(filename)
-    if m is None:
-        return np.NaN
-    return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-
-def WV_year(filename):
-    this_date=WV_date(filename)
-    this_delta=this_date-date(2000, 1, 1)
-    return 2000+this_delta.days/365.25
+def out_filenames(file):
+    out_files={}
+    if '_dem_filt' in file:
+        out_files['h5']=file.replace('_dem_filt.tif','_shift_est.h5')
+    else:
+        out_files['h5']=file.replace('.tiff','.tif').replace('.tif','_shift_est.h5')
+    out_files['json'] = out_files['h5'].replace('.h5','.json')
+    return out_files
 
 def make_queue(args):
     files=glob.glob(args.queue_wc)
@@ -38,8 +34,8 @@ def make_queue(args):
     arg_string= ' '.join(arg_list)
     with open('register_queue.txt','w') as fh:
         for file in files:
-            out_file=file.replace('_dem_filt.tif','_shift_est.h5')
-            if os.path.isfile(out_file):
+            out_files=out_filenames(file)
+            if os.path.isfile(out_files['h5']):
                 continue
             fh.write(f'register_WV_DEM_with_IS2.py --DEM_file {file} '+ arg_string + '\n')
     sys.exit(0)
@@ -66,10 +62,10 @@ def eval_DEM_shift(delta, D_pt, DEM, sigma_min=0, iterations=1, mask=None):
 
     if mask is None:
         mask = np.ones_like(D_pt.x, dtype=bool)
-    try:
-        mask &= np.isfinite(dh)
-    except Exception as e:
-        print("HERE")
+    #try:
+    mask &= np.isfinite(dh)
+    #except Exception:
+    #    print("HERE")
     last_mask = mask
     iteration=0
     while iteration==0 or (iteration < iterations and not np.all(last_mask==mask)):
@@ -151,7 +147,7 @@ def search_offsets(D_pt, DEM, max_delta=10, delta_tol = 1, sigma_min=0.02):
     return best_offset, R_of_delta
 
 def calc_blockmedians(D_pt, mask, scale=2000):
-    
+
     def med_spread(D, ind):
         return np.nanmedian(D.r[ind]), pc.RDE(D.r[ind])
     if np.sum(mask)>0:
@@ -160,21 +156,31 @@ def calc_blockmedians(D_pt, mask, scale=2000):
     else:
         return None
 
-def write_output(D_out, D_BM, filename):
+def write_json_output( D_out, json_file ):
+
+    D_dict = {field:getattr(D_out, field).astype(float)[0] for field in D_out.fields}
+
+    with open(json_file,'w') as fh:
+        json.dump(D_dict, fh, indent=4)
+
+def write_output(D_out, D_BM, filename, D_pt=None, DEBUG=False):
 
     # need every field in D_out to be a non-zero-dimension array
     D_out=pc.data().from_dict({key:np.array(item)[None] for key, item in D_out.items()})
 
-    out_file=filename.replace('_dem_filt.tif','_shift_est.h5')
-    if os.path.isfile(out_file):
-        os.remove(out_file)
-    D_out.to_h5(out_file, group='meta', extensible=False)
+    out_files=out_filenames(filename)
+
+    if D_pt is not None and DEBUG:
+        D_pt.to_h5(out_files['h5'], group='data', extensible=False, replace=False)
+
+    write_json_output(D_out, out_files['json'])
     if D_BM is not None:
-        D_BM.to_h5(out_file, group='stats_2km', replace=False)
+        D_BM.to_h5(out_files['h5'], group='stats_2km', replace=False)
 
 def register_one_DEM(DEM_file=None, GeoIndex_wc=None,
                      mask_file=None, max_dist=20,
-                     sigma_min=0.1, sigma_max=5, save_data=True, verbose=False):
+                     sigma_min=0.1, sigma_max=5, save_data=True,
+                     DEBUG=False, verbose=False):
     D_out={'x':np.NaN,
            'y':np.NaN,
            'N':0,
@@ -190,9 +196,14 @@ def register_one_DEM(DEM_file=None, GeoIndex_wc=None,
            'dh_dt':np.NaN,
            'delta_h':np.NaN,}
 
+    out_files=out_filenames(DEM_file)
+    for out_file in out_files.values():
+        if os.path.isfile(out_file):
+            os.remove(out_file)
+
     DEM=pc.grid.data().from_geotif(DEM_file)
     DEM.z[DEM.z==0]=np.NaN
-    DEM.t=WV_year(DEM.filename)
+    DEM.t=pc.grid.DEM_year(DEM.filename)
     XR, YR= [[np.floor(ii[0]/1.e4)*1.e4, np.ceil(ii[1]/1.e4)*1.e4] for ii in DEM.bounds()]
     for ii in [XR, YR]:
         if ii[0] == ii[1]:
@@ -213,19 +224,19 @@ def register_one_DEM(DEM_file=None, GeoIndex_wc=None,
             # TypeError is thrown if the return from query_xy_box is None
             pass
     D_pt = pc.data().from_list(D_pt)
-    
+
     mask_file = DEM_file.replace('.tif','_plane_mask.tif')
     if os.path.isfile(mask_file):
         keep = pc.grid.data().from_geotif(mask_file).interp(D_pt.x, D_pt.y) < 0.1
         D_pt.index(keep)
-    
+
     if D_pt.size < 5:
         if 'x' in D_pt.fields:
             D_pt.assign({'r': np.zeros_like(D_pt.x)+np.NaN})
         print('register_WV_DEM_with_IS2.py: not enough valid points found for ' + DEM.filename)
         write_output(D_out, None, DEM.filename)
         return
-    
+
     D_pt.assign({'t':D_pt.delta_time/24/3600/365.25+2018,
                  'z':D_pt.h_li,
                 'sigma':D_pt.h_li_sigma})
@@ -235,20 +246,25 @@ def register_one_DEM(DEM_file=None, GeoIndex_wc=None,
                 (D_pt.atl06_quality_summary==0) & \
                 np.isfinite(D_pt.sigma))
 
-    D_pt.index(pc.grid.data().from_geotif(mask_file, bounds=DEM.bounds()).interp(D_pt.x, D_pt.y)==1)
-
     mask0 = np.ones(D_pt.size, dtype=bool)
-    for dx in [-max_dist, 0, max_dist]:
-        for dy in [-max_dist, 0, max_dist]:
+    if max_dist > 0:
+        shift_list=[-max_dist, 0, max_dist]
+    else:
+        shift_list=[0]
+    for dx in shift_list:
+        for dy in shift_list:
             mask0 &= np.isfinite(DEM.interp(D_pt.x+dx, D_pt.y+dy))
 
     if np.sum(mask0) < 5:
         D_pt.assign({'r':np.zeros_like(D_pt.x)+np.NaN})
         print('register_WV_DEM_with_IS2.py: not enough valid points found for ' + DEM.filename)
-        write_output(D_out, None, DEM.filename)
+        write_output(D_out, None, DEM.filename, D_pt=D_pt, DEBUG=DEBUG)
         return
 
-    print(f'\tregister one DEM: after initial search, found {np.sum(mask0)}')
+    print(f'\tregister one DEM: after initial editing, found {np.sum(mask0)}')
+
+    if DEBUG:
+        D_pt.to_h5(out_filenames(DEM.filename)['h5'], group='input_data')
 
     sigma0, sigma_scaled0, mask0, m0, r0, dh0 = eval_DEM_shift([0,0], D_pt, DEM, sigma_min=sigma_min, iterations=50, mask=mask0)
 
@@ -260,14 +276,18 @@ def register_one_DEM(DEM_file=None, GeoIndex_wc=None,
 
     if np.sum(mask0) < 55:
         print('register_WV_DEM_with_IS2.py: not enough valid points found for ' + DEM.filename)
-        write_output(D_out, None, DEM.filename)
+        write_output(D_out, None, DEM.filename, D_pt=D_pt, DEBUG=DEBUG)
         return
 
-    delta_best, R_of_delta = search_offsets(D_pt, DEM, max_delta=20, delta_tol=1, sigma_min=sigma_min)
+    if max_dist > 0:
+        delta_best, R_of_delta = search_offsets(D_pt, DEM, max_delta=20, delta_tol=1, sigma_min=sigma_min)
+    else:
+        delta_best = (0,0)
     sigma, sigma_scaled, mask, m, r, dh = eval_DEM_shift(delta_best, D_pt, DEM, sigma_min=sigma_min, iterations=1)
     sigma0, sigma_scaled0, mask0, m0, r0, dh0 = eval_DEM_shift([0,0], D_pt, DEM, sigma_min=sigma_min, iterations=1)
+    if max_dist==0:
+        R_of_delta = {delta_best : sigma0}
 
-    
     D_out={'x':np.mean(D_pt.x),
            'y':np.mean(D_pt.y),
            'N':D_pt.size,
@@ -286,16 +306,16 @@ def register_one_DEM(DEM_file=None, GeoIndex_wc=None,
     D_pt.assign({'r':r,
                 'r0':r0})
     D_BM=calc_blockmedians(D_pt, mask0, scale=2000)
-    
+
     if save_data:
-        write_output(D_out, D_BM, DEM.filename)
+        write_output(D_out, D_BM, DEM.filename, D_pt=D_pt, DEBUG=DEBUG)
 
     return delta_best, m, D_pt, DEM, D_out, D_BM, R_of_delta, [sigma0, sigma], [sigma_scaled0, sigma_scaled]
 
 def main():
 
     import argparse
-    parser=argparse.ArgumentParser(description='Find the best offset for a DEM relative to a set of altimetry data')
+    parser=argparse.ArgumentParser(description='Find the best offset for a DEM relative to a set of altimetry data', fromfile_prefix_chars="@")
     parser.add_argument("--DEM_file", '-d', type=str)
     parser.add_argument("--GeoIndex_wc", '-g', type=str)
     parser.add_argument("--mask_file", '-m', type=str)
@@ -303,6 +323,7 @@ def main():
     parser.add_argument("--sigma_min", type=float, default=0.1)
     parser.add_argument("--sigma_max", type=float, default=5)
     parser.add_argument("--queue_wc", '-q', type=str)
+    parser.add_argument("--DEBUG", action='store_true')
     parser.add_argument("--verbose",'-v', action="store_true")
     args=parser.parse_args()
 
