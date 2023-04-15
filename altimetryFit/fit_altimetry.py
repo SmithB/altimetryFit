@@ -16,7 +16,7 @@ os.environ['OMP_NUM_THREADS']="1"
 os.environ['OPENBLAS_NUM_THREADS']="1"
 
 
-#import warnings 
+#import warnings
 #warnings.simplefilter('error')
 
 import numpy as np
@@ -47,7 +47,7 @@ def set_memory_limit(max_bytes):
 def make_sensor_dict(h5_file):
     '''
     make a dictionary of sensors a fit output file.
-    
+
     Input: h5f: h5py file containing the fit output
     Output: dict giving the sensor for each number
     '''
@@ -58,7 +58,7 @@ def make_sensor_dict(h5_file):
 
         sensor_re=re.compile('sensor_(\d+)')
         for sensor_key, sensor in h5f['/meta/sensors/'].attrs.items():
-            sensor_num=int(sensor_re.search(sensor_key).group(1))            
+            sensor_num=int(sensor_re.search(sensor_key).group(1))
             this_sensor_dict[sensor_num]=sensor
     return this_sensor_dict
 
@@ -99,7 +99,7 @@ def apply_tides(D, xy0, W, tide_mask_file, tide_directory, tide_model):
     if np.any(is_els.ravel()):
         # N.B.  removed the half-day offset in the tide correction.
         # Old version read:  (D.time-(2018+0.5/365.25))*24*3600*365.25
-        # updates have made time values equivalent to years- Y2K +2000, 
+        # updates have made time values equivalent to years- Y2K +2000,
         # consistent between IS1 and IS2 (2/18/2022)
         D.tide_ocean = compute_tide_corrections(\
                 D.x, D.y, (D.time-2000)*24*3600*365.25,
@@ -308,8 +308,8 @@ def fit_altimetry(xy0, Wxy=4e4, \
                 continue
             for field in ['rgt','cycle','spot']:
                 if field not in Di.fields:
-                    Di.assign({field:np.zeros_like(Di.x)+np.NaN}) 
-                
+                    Di.assign({field:np.zeros_like(Di.x)+np.NaN})
+
         data=pc.data(fields=['x','y','z','time','sigma','sigma_corr','slope_mag', 'sensor','spot', 'rgt','cycle','BP']).from_list(D)
         data.assign({'day':np.floor(data.time*365.25)})
         if extra_error is not None:
@@ -331,14 +331,14 @@ def fit_altimetry(xy0, Wxy=4e4, \
 
     if (firn_fixed or firn_rescale) and reread_dirs is None and \
         calc_error_file is None and reread_file is None:
-        assign_firn_variable(data, firn_correction, firn_directory, hemisphere, 
+        assign_firn_variable(data, firn_correction, firn_directory, hemisphere,
                          model_version=firn_version, subset_valid=True)
 
         if firn_fixed:
             data.z -= data.h_firn
     if firn_rescale:
         # the grid has one node at each domain corner.
-        this_grid=fd_grid( [xy0[1]+np.array([-0.5, 0.5])*Wxy, 
+        this_grid=fd_grid( [xy0[1]+np.array([-0.5, 0.5])*Wxy,
                 xy0[0]+np.array([-0.5, 0.5])*Wxy], [Wxy, Wxy],\
              name=firn_correction+'_scale', srs_proj4=SRS_proj4)
         bias_model_args += [{'name': firn_correction+'_scale',  \
@@ -375,8 +375,8 @@ def fit_altimetry(xy0, Wxy=4e4, \
 
     if year_mask_dir is not None:
         mask_data_by_year(data, year_mask_dir);
-    
-    sigma_extra_masks = {'laser': np.in1d(data.sensor, laser_sensors), 
+
+    sigma_extra_masks = {'laser': np.in1d(data.sensor, laser_sensors),
                          'DEM': ~np.in1d(data.sensor, laser_sensors)}
     # run the fit
     print("="*50)
@@ -385,7 +385,7 @@ def fit_altimetry(xy0, Wxy=4e4, \
                      reference_epoch=reference_epoch, compute_E=compute_E,
                      bias_params=bias_params,
                      repeat_res=repeat_res, max_iterations=max_iterations,
-                     srs_proj4=SRS_proj4, VERBOSE=True, Edit_only=Edit_only, 
+                     srs_proj4=SRS_proj4, VERBOSE=True, Edit_only=Edit_only,
                      data_slope_sensors=DEM_sensors,\
                      E_slope_bias=E_slope_bias,\
                      mask_file=mask_file,\
@@ -435,7 +435,7 @@ def main(argv):
     parser.add_argument('--bm_scale_laser', type=float, default=50, help="blockmedian scale to apply to laser data")
     parser.add_argument('--bm_scale_DEM', type=float, default=200, help='blockmedian scale to apply to DEM data')
     parser.add_argument('--N_target_laser', type=float, default=200000, help='target number of laser data')
-    parser.add_argument('--N_target_DEM', type=float, default=800000, help='target number of DEM data')    
+    parser.add_argument('--N_target_DEM', type=float, default=800000, help='target number of DEM data')
     parser.add_argument('--extra_error', type=float)
     parser.add_argument('--DEM_file', type=str, help='DEM file to use with the DEM_tol parameter and in slope error calculations')
     parser.add_argument('--mask_floating', action="store_true")
@@ -462,9 +462,9 @@ def main(argv):
     args, unk=parser.parse_known_args()
     print("unknown arguments:"+str(unk))
 
-    
+
     set_memory_limit(int(args.max_mem*1024*1024*1024))
-    
+
     if args.avg_scales is not None:
         args.avg_scales = [int(temp) for temp in args.avg_scales.split(',')]
     args.grid_spacing = [float(temp) for temp in args.grid_spacing.split(',')]
@@ -488,11 +488,11 @@ def main(argv):
         args.out_name=args.calc_error_file
         in_file=args.calc_error_file
         dest_dir=os.path.dirname(args.reread_file)
-        
+
     if args.reread_file is not None:
         # get xy0 from the filename
         in_file=args.reread_file
-        
+
     if in_file is not None:
         re_match=re.compile('E(.*)_N(.*).h5').search(in_file)
         args.xy0=[float(re_match.group(ii))*1000 for ii in [1, 2]]
@@ -505,7 +505,7 @@ def main(argv):
         if not os.path.isfile(args.out_name):
             print(f"{args.out_name} not found, returning")
             return 1
-        
+
     if args.error_res_scale is not None:
         if args.calc_error_file is not None:
             for ii, key in enumerate(['z0','dz']):
@@ -528,7 +528,7 @@ def main(argv):
                     DEM_bias_params[key]=float(val.split('#')[0])
                 except Exception:
                     print("problem with DEM_bias_params line\n"+line)
-                    
+
     if not os.path.isdir(args.base_directory):
         os.mkdir(args.base_directory)
     if not os.path.isdir(dest_dir):
