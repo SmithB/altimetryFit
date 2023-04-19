@@ -4,10 +4,15 @@
 Created on Tue Feb 26 17:12:48 2019
 
 @author: ben
+
+Revision history [Authoritative history is in the git history]
+C/A 2021: Code developed by smithB, under the fit_OIB_aug.py filename
+Early 2022: Renamed to fit_altietry.py by smithB 
+Mid 2022: Tsutterley added lagrangian code to fit_OIB_aug.py
+April 2023: SmithB merged lagrangian code into fit_altimetry.py
 """
 
 import resource
-
 import os
 # make sure we're only using one thread
 os.environ['MKL_NUM_THREADS']="1"
@@ -29,12 +34,13 @@ from pyTMD import compute_tide_corrections
 from SMBcorr import assign_firn_variable
 from altimetryFit.read_optical import read_optical_data, laser_key
 from CS2_fit.read_CS2_data import read_CS2_data
+import pointAdvection
 import h5py
 import sys
 import glob
 import json
 import re
-
+import xarray as xr
 
 def set_memory_limit(max_bytes):
     '''
@@ -46,7 +52,7 @@ def set_memory_limit(max_bytes):
 
 def make_sensor_dict(h5_file):
     '''
-    make a dictionary of sensors a fit output file.
+    Make a dictionary matching sensor number to bias id and source.
 
     Input: h5f: h5py file containing the fit output
     Output: dict giving the sensor for each number
@@ -130,6 +136,116 @@ def mask_data_by_year(data, mask_dir):
         temp=this_mask.interp(data.x[these_pts], data.y[these_pts])
         good[these_pts[(temp<0.5) & np.isfinite(temp)]] = 0
     data.index(good)
+
+def setup_lagrangian(data, lagrangian_epoch=None, velocity_files=None, 
+                lagrangian_ref_dem=None,
+                 SRS_proj4=None, xy0=None, Wxy=None, **kwargs):
+    # verbose output of lagrangian parameters
+    print(f'Advect parcels to {lagrangian_epoch:0.1f}')
+    print(f'Velocity File(s): {",".join(velocity_files)}')
+    # get latitude and longitude of the original data
+    data.get_latlon(proj4_string=SRS_proj4)
+    
+    if lagrangian_ref_dem is not None:
+        print(f'Subtracting reference dem from {lagrangian_ref_dem}')
+        data.assign(z0=data.z.copy())
+        data.z -= pc.grid.data().from_geotif(lagrangian_ref_dem, bounds=data.bounds()).interp(data.x, data.y)
+        data.index(np.isfinite(data.z))
+
+    # create an advection object with original coordinates and times
+    # calculate the number of seconds between data times and epoch
+    delta_time = (data.time - lagrangian_epoch)*24*3600*365.25
+    adv = pointAdvection.advection(x=data.x,y=data.y,t=delta_time)
+    # read velocity image and trim to a buffer extent around points
+    # use a wide buffer to encapsulate advections in fast moving areas
+    if len(velocity_files) == 1:
+        if 'NSIDC' in os.path.basename(velocity_files[0]):
+            with xr.open_dataset(velocity_files[0]) as ds:
+                adv.from_dict({'x':np.array(ds.x),
+                               'y':np.array(ds.y)[::-1],
+                               'U':np.array(ds.VelocitySeries[:, 0, ::-1,:]),
+                               'V':np.array(ds.VelocitySeries[:, 1, ::-1,:]),
+                               'eU':np.array(ds.VelocitySeries[:, 3, ::-1,:]),
+                               'eV':np.array(ds.VelocitySeries[:, 4, ::-1,:]),
+                               'time':np.array(ds.time.data-
+                                               np.datetime64('2000-01-01'), 
+                                               dtype='timedelta64[s]')\
+                                         .astype(float)/24./3600./365.25 + 2000
+                               }, t_axis=0)
+                #buffer=Wxy
+                #buffer=np.max(np.sqrt(adv.velocity.U**2+adv.velocity.V**2)*24/3600*365.25)\
+                #    *np.max(np.abs(delta_time))*2
+                #adv.velocity.crop(xy0[0]+np.array([-1, 1])*(Wxy+buffer), xy0[1]+np.array([-1, 1])*(Wxy+buffer))
+                lagrangian_interpolation = 'linear'
+        else:
+            adv.from_nc(velocity_files[0], buffer=Wxy)
+            lagrangian_interpolation = 'spline'
+    else:
+        vlist = [pc.grid.data().from_nc(v,field_mapping=dict(U='VX', V='VY')) \
+            for v in velocity_files]
+        adv.from_list(vlist, buffer=Wxy)
+        
+        lagrangian_interpolation = 'linear'
+
+    # convert velocity times to delta times from epoch
+    adv.velocity.time = (adv.velocity.time - lagrangian_epoch)*24*3600*365.25
+    adv.fill_velocity_gaps()
+    # advect points to delta time 0
+    adv.translate_parcel(integrator='RK4', method=lagrangian_interpolation, t0=0)
+    # verbose output of displacement range
+    mindist,maxdist = np.nanmin(adv.distance), np.nanmax(adv.distance)
+    print('Min/Max Displacement: {0:0.1f} {1:0.1f}'.format(mindist,maxdist))
+    # save the original coordinates:
+    data.assign(x_original=data.x.copy(), y_original=data.y.copy())
+    # replace x and y with the advected coordinates
+    data.x=np.copy(adv.x0); data.y=np.copy(adv.y0)
+
+    # reindex to coordinates that are within the domain after advection
+    domain_mask = (np.abs(data.x-xy0[0]) <= Wxy/2) & (np.abs(data.y-xy0[1]) <= Wxy/2)
+    data.index(domain_mask)
+    out_args=kwargs
+    out_args.update({'advection_obj':adv, 
+            'method':lagrangian_interpolation, 
+            'lagrangian_epoch':lagrangian_epoch,
+            'SRS_proj4':SRS_proj4, 
+            'xy0':xy0,
+            'Wxy':Wxy})
+    return out_args
+
+def update_output_grids_for_lagrangian(S, advection_obj=None, 
+                                       lagrangian_epoch=None, method=None, 
+                                       **kwargs):
+    # Advect output coordinates to output grid times.
+    print('Advect grid coordinates from Lagrangian epoch')
+    # reassign the unadvected locations to the data 'x' and 'y' fields
+    S['data'].x=S['data'].x_original.copy()
+    S['data'].y=S['data'].y_original.copy()
+    for field in ['x_original','y_original']:
+        S['data'].fields.remove(field)
+
+    # shape of smooth fit
+    ny,nx,nt = S['m']['dz'].shape
+    # replace coordinates of original lagrangian object
+    # with initial grid coordinates at lagrangian epoch
+    gridx,gridy = np.meshgrid(S['m']['dz'].x, S['m']['dz'].y)
+    advection_obj.x, advection_obj.y = (gridx.flatten(), gridy.flatten())
+    advection_obj.t = np.zeros((ny*nx))
+    # advect coordinates to each output time
+    # calculate as displacements from original grid coordinates
+    S['m']['dz'].assign(dx=np.zeros((ny,nx,nt)), dy=np.zeros((ny, nx, nt)))
+    for i,delta_time in enumerate(S['m']['dz'].time):
+        # advect points to output grid time
+        t0 = (delta_time - lagrangian_epoch)*24*3600*365.25
+        advection_obj.translate_parcel(integrator='RK4', method=method, t0=t0)
+        # reshape to output grid dimensions and
+        # calculate displacements from original coordinates
+        S['m']['dz'].dx[:,:,i] = np.reshape(advection_obj.x0, (ny,nx)) - gridx
+        S['m']['dz'].dy[:,:,i] = np.reshape(advection_obj.y0, (ny,nx)) - gridy
+        # update coordinates to advect to next field
+        # without recomputing advection from original point
+        advection_obj.x[:] = np.copy(advection_obj.x0)
+        advection_obj.y[:] = np.copy(advection_obj.y0)
+        advection_obj.t = np.zeros((ny*nx)) + np.copy(t0)
 
 def interp_ds(ds, scale):
     for field in ds.fields:
@@ -255,6 +371,10 @@ def fit_altimetry(xy0, Wxy=4e4, \
             tide_mask_file=None,\
             error_res_scale=None,\
             avg_mask_directory=None, \
+            lagrangian=False, \
+            velocity_files=None, \
+            lagrangian_epoch=2000.0, \
+            lagrangian_ref_dem=None,\
             tide_directory=None, \
             tide_model='CATS2008', \
             year_mask_dir=None, \
@@ -317,13 +437,19 @@ def fit_altimetry(xy0, Wxy=4e4, \
         # apply the tides if a directory has been provided
         if tide_mask_file is not None:
             apply_tides(data, xy0, Wxy, tide_mask_file, tide_directory, tide_model)
-
     else:
         data, sensor_dict = reread_data_from_fits(xy0, Wxy, reread_dirs, template='E%d_N%d.h5')
     laser_sensors=[item for key, item in laser_key().items()]
     DEM_sensors=np.array([key for key in sensor_dict.keys() if key not in laser_sensors ])
     if reference_epoch is None:
         reference_epoch=len(np.arange(t_span[0], t_span[1], spacing['dt']))
+
+    if lagrangian:
+        lagrangian_dict=setup_lagrangian( data,
+            lagrangian_epoch=lagrangian_epoch, 
+            lagrangian_ref_dem=lagrangian_ref_dem,
+            velocity_files=velocity_files,
+            SRS_proj4=SRS_proj4, xy0=xy0, Wxy=Wxy)
 
     # make every dataset a double
     for field in data.fields:
@@ -333,7 +459,6 @@ def fit_altimetry(xy0, Wxy=4e4, \
         calc_error_file is None and reread_file is None:
         assign_firn_variable(data, firn_correction, firn_directory, hemisphere,
                          model_version=firn_version, subset_valid=True)
-
         if firn_fixed:
             data.z -= data.h_firn
     if firn_rescale:
@@ -400,12 +525,19 @@ def fit_altimetry(xy0, Wxy=4e4, \
                      sigma_extra_masks=sigma_extra_masks,\
                      sensor_grid_bias_params=sensor_grid_bias_params,\
                      converge_tol_frac_TSE=0.005)
+    
+    if lagrangian:
+        update_output_grids_for_lagrangian(S,**lagrangian_dict)
+
     return S, data, sensor_dict
 
 def main(argv):
     # account for a bug in argparse that misinterprets negative agruents
     for i, arg in enumerate(argv):
         if (arg[0] == '-') and arg[1].isdigit(): argv[i] = ' ' + arg
+
+    def path(p):
+        return os.path.abspath(os.path.expanduser(p))
 
     import argparse
     parser=argparse.ArgumentParser(description="function to fit icebridge data with a smooth elevation-change model", \
@@ -416,10 +548,10 @@ def main(argv):
     parser.add_argument('--reference_epoch', type=int)
     parser.add_argument('--grid_spacing','-g', type=str, help='grid spacing:DEM (meters),dh maps xy (meters),dh_maps time (years): comma-separated, no spaces', default='250.,4000.,1.')
     parser.add_argument('--Hemisphere','-H', type=int, default=1, help='hemisphere: -1=Antarctica, 1=Greenland')
-    parser.add_argument('--base_directory','-b', type=str, help='base directory')
-    parser.add_argument('--GeoIndex_source_file', type=str, help='json file containing locations for geoIndex files')
+    parser.add_argument('--base_directory','-b', type=path, help='base directory')
+    parser.add_argument('--GeoIndex_source_file', type=path, help='json file containing locations for geoIndex files')
     parser.add_argument('--reread_file', type=str, help='reread data from this file')
-    parser.add_argument('--out_name', '-o', type=str, help="output file name")
+    parser.add_argument('--out_name', '-o', type=path, help="output file name")
     parser.add_argument('--dzdt_lags', type=str, default='1,2,4', help='lags for which to calculate dz/dt, comma-separated list, no spaces')
     parser.add_argument('--prelim', action="store_true")
     parser.add_argument('--E_d2zdt2', type=float, default=5000)
@@ -429,7 +561,7 @@ def main(argv):
     parser.add_argument('--data_gap_scale', type=float,  default=2500)
     parser.add_argument('--max_iterations', type=int, default=8)
     parser.add_argument('--bias_params', type=str, nargs='+', default=['time_corr','sensor','spot'])
-    parser.add_argument('--DEM_grid_bias_params_file', type=str, help='file containing DEM grid bias params')
+    parser.add_argument('--DEM_grid_bias_params_file', type=path, help='file containing DEM grid bias params')
     parser.add_argument('--bias_nsigma_edit', type=int, default=6, help='edit points whose estimated bias is more than this value times the expected')
     parser.add_argument('--bias_nsigma_iteration', type=int, default=6, help='apply bias_nsigma_edit after this iteration')
     parser.add_argument('--bm_scale_laser', type=float, default=50, help="blockmedian scale to apply to laser data")
@@ -437,31 +569,34 @@ def main(argv):
     parser.add_argument('--N_target_laser', type=float, default=200000, help='target number of laser data')
     parser.add_argument('--N_target_DEM', type=float, default=800000, help='target number of DEM data')
     parser.add_argument('--extra_error', type=float)
-    parser.add_argument('--DEM_file', type=str, help='DEM file to use with the DEM_tol parameter and in slope error calculations')
+    parser.add_argument('--DEM_file', type=path, help='DEM file to use with the DEM_tol parameter and in slope error calculations')
     parser.add_argument('--mask_floating', action="store_true")
-    parser.add_argument('--map_dir','-m', type=str)
-    parser.add_argument('--firn_directory', type=str, help='directory containing firn model')
+    parser.add_argument('--map_dir','-m', type=path)
+    parser.add_argument('--firn_directory', type=path, help='directory containing firn model')
     parser.add_argument('--firn_model', type=str, help='firn model name')
     parser.add_argument('--firn_version', type=str, help='firn version')
     parser.add_argument('--rerun_file_with_firn', type=str)
     parser.add_argument('--firn_rescale', action='store_true')
     parser.add_argument('--firn_fixed', action='store_true')
-    parser.add_argument('--mask_file', type=str)
-    parser.add_argument('--geoid_file', type=str)
+    parser.add_argument('--lagrangian', action='store_true')
+    parser.add_argument('--velocity_files', type=path, nargs='+', help='lagrangian velocity files.  May contain multiple time values.')
+    parser.add_argument('--lagrangian_epoch', type=float, help='time (decimal year) to which data will be advected')
+    parser.add_argument('--lagrangian_ref_dem', type=path, help='dem to be subtracted from data before advection')
+    parser.add_argument('--mask_file', type=path)
+    parser.add_argument('--geoid_file', type=path)
     parser.add_argument('--water_mask_threshold', type=float)
-    parser.add_argument('--year_mask_dir', type=str)
-    parser.add_argument('--tide_mask_file', type=str)
-    parser.add_argument('--tide_directory', type=str)
+    parser.add_argument('--year_mask_dir', type=path)
+    parser.add_argument('--tide_mask_file', type=path)
+    parser.add_argument('--tide_directory', type=path)
     parser.add_argument('--tide_model', type=str, help='tide model name')
-    parser.add_argument('--avg_mask_directory', type=str)
-    parser.add_argument('--calc_error_file','-c', type=str)
+    parser.add_argument('--avg_mask_directory', type=path)
+    parser.add_argument('--calc_error_file','-c', type=path)
     parser.add_argument('--calc_error_for_xy', action='store_true')
     parser.add_argument('--avg_scales', type=str, help='scales at which to report average errors, comma-separated list, no spaces')
     parser.add_argument('--error_res_scale','-s', type=float, nargs=2, default=[4, 2], help='if the errors are being calculated (see calc_error_file), scale the grid resolution in x and y to be coarser')
     parser.add_argument('--max_mem', type=float, default=15., help='maximum memory the program is allowed to use, in GB.')
     args, unk=parser.parse_known_args()
     print("unknown arguments:"+str(unk))
-
 
     set_memory_limit(int(args.max_mem*1024*1024*1024))
 
@@ -559,6 +694,10 @@ def main(argv):
             firn_correction=args.firn_model,\
             firn_fixed=args.firn_fixed,\
             firn_rescale=args.firn_rescale,\
+            lagrangian=args.lagrangian,\
+            velocity_files=args.velocity_files,\
+            lagrangian_epoch=args.lagrangian_epoch,\
+            lagrangian_ref_dem=args.lagrangian_ref_dem,\
             mask_file=args.mask_file, \
             DEM_file=args.DEM_file,\
             geoid_file=args.geoid_file,\
@@ -592,10 +731,3 @@ def main(argv):
     print(f"peak memory usage (kB)={total_memory}")
 if __name__=='__main__':
     main(sys.argv)
-
-# -264000 -636000 default_args_I1I2.txt
-
-#-200000 -2520000 -g 500,4000,1 --calc_error_file /Volumes/ice2/ben/ATL14_test/d3zdxdt=0.00001_d2zdt2=4000_RACMO//centers/E-200_N-2520.h5  @/home/ben//git_repos/LSsurf/default_GL_args.txt
-
-# 0 0 -m /Volumes/ice2/ben/ATL14_test/Jako_d2zdt2=5000_d3z=0.00001_d2zdt2=1500_RACMO -W 4e4
-#-80000 -2320000 -W 40000 -t 2002.5 2019.5 -g 200 2000 1  -o /Volumes/ice2/ben/ATL14_test/Jako_d2zdt2=5000_d3z=0.00001_d2zdt2=1500_RACMO/E-80_N-2320.h5 --E_d3zdx2dt 0.00001 --E_d2zdt2 1500 -f RACMO
