@@ -130,3 +130,11 @@ dmypy.json
 
 # backups
 *~
+
+# Other stuff:
+Untitled*.ipynb
+untitled*.ipynb
+notebooks/*
+*queue*.txt
+\#*
+par_run*/
