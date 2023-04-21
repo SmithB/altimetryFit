@@ -95,7 +95,7 @@ def custom_edits(data):
     bad=np.abs(data.time - 2003.7821) < 0.1/24/365.25
     data.index(bad==0)
 
-def apply_tides(D, xy0, W, tide_mask_file, tide_directory, tide_model):
+def apply_tides(D, xy0, W, tide_mask_file, tide_directory, tide_model, EPSG=3031):
     #read in the tide mask (for Antarctica) and apply dac and tide to ice-shelf elements
     # the tide mask should be 1 for non-grounded points (ice shelves?), zero otherwise
     tide_mask = pc.grid.data().from_geotif(tide_mask_file, bounds=[np.array([-0.6, 0.6])*W+xy0[0], np.array([-0.6, 0.6])*W+xy0[1]])
@@ -110,7 +110,7 @@ def apply_tides(D, xy0, W, tide_mask_file, tide_directory, tide_model):
         D.tide_ocean = compute_tide_corrections(\
                 D.x, D.y, (D.time-2000)*24*3600*365.25,
                 DIRECTORY=tide_directory, MODEL=tide_model,
-                EPOCH=(2000,1,1,0,0,0), TYPE='drift', TIME='utc', EPSG=3031)
+                EPOCH=(2000,1,1,0,0,0), TYPE='drift', TIME='utc', EPSG=EPSG)
     D.tide_ocean[is_els==0] = 0
     #D.dac[is_els==0] = 0
     D.tide_ocean[~np.isfinite(D.tide_ocean)] = 0
@@ -158,6 +158,8 @@ def setup_lagrangian(data, lagrangian_epoch=None, velocity_files=None,
     adv = pointAdvection.advection(x=data.x,y=data.y,t=delta_time)
     # read velocity image and trim to a buffer extent around points
     # use a wide buffer to encapsulate advections in fast moving areas
+    if isinstance(velocity_files, str):
+        velocity_files=[velocity_files]
     if len(velocity_files) == 1:
         if 'NSIDC' in os.path.basename(velocity_files[0]):
             with xr.open_dataset(velocity_files[0]) as ds:
@@ -436,7 +438,11 @@ def fit_altimetry(xy0, Wxy=4e4, \
             data.sigma[data.time < 2010] = np.sqrt(data.sigma[data.time<2010]**2 +extra_error**2)
         # apply the tides if a directory has been provided
         if tide_mask_file is not None:
-            apply_tides(data, xy0, Wxy, tide_mask_file, tide_directory, tide_model)
+            if hemisphere==1:
+                EPSG=3413
+            else:
+                EPSG=3031
+            apply_tides(data, xy0, Wxy, tide_mask_file, tide_directory, tide_model, EPSG=EPSG)
     else:
         data, sensor_dict = reread_data_from_fits(xy0, Wxy, reread_dirs, template='E%d_N%d.h5')
     laser_sensors=[item for key, item in laser_key().items()]
