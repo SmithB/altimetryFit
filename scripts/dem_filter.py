@@ -61,6 +61,8 @@ def parse_input_args(args):
     parser.add_argument('--pgc_masks','-p', action='store_true')
     parser.add_argument('--pgc_url_file',type=str)
     parser.add_argument('--facet_tol', '-f', type=float, default=None)
+    parser.add_argument('--ref_dem', type=str)
+    parser.add_argument('--ref_dem_tol', type=float, default=50)
     return parser.parse_args()
 
 def get_pgc_masks(filename, pgc_url_file):
@@ -91,8 +93,9 @@ def get_pgc_masks(filename, pgc_url_file):
     pgc_url=None
     with open(pgc_url_file,'r') as fh:
         for line in fh:
-            if pgc_base in line:
-                pgc_url=line.rstrip()
+            line = line.rstrip()
+            if line.endswith(pgc_base):
+                pgc_url=line
                 break
 
     # complain if no entry is in the PGC url file
@@ -107,15 +110,37 @@ def get_pgc_masks(filename, pgc_url_file):
     II=gdal.Info(filename, format='json')
     if resample_str is not None:
         for extension, resamp_alg in zip(['_matchtag','_bitmask'],['min','max']):
-
             warpoptions=gdal.WarpOptions(format="GTiff", outputBounds=II['cornerCoordinates']['lowerLeft']+II['cornerCoordinates']['upperRight'],
-                                 creationOptions=None,
-                resampleAlg='min', xRes=np.abs(II['geoTransform'][1]), yRes=np.abs(II['geoTransform'][-1]), srcNodata=255, dstNodata=255)
+                 creationOptions = ['COMPRESS=LZW'],
+                 resampleAlg='min', 
+                 xRes=np.abs(II['geoTransform'][1]), 
+                 yRes=np.abs(II['geoTransform'][-1]), srcNodata=255, dstNodata=255)
             gdal.Warp(out_files[extension], pgc_url+extension+'.tif',options=warpoptions)
             #plt.figure()
             #pc.grid.data().from_geotif(out_file).show()
 
     return out_files
+
+def get_ref_dem(ref_dem_filename, in_filename):
+    """Make the reference dem subset file."""
+
+    pgc_re=re.compile('(SETSM_.*_seg\d+)')
+
+    # Output / destination
+    dst_filename = os.path.join(
+          os.path.dirname(in_filename), pgc_re.search(in_filename).group(1)+'_refdem.tif')
+
+    II=gdal.Info(in_filename, format='json')
+    # Do the work
+    warpoptions=gdal.WarpOptions(format="GTiff", outputBounds=II['cornerCoordinates']['lowerLeft']+II['cornerCoordinates']['upperRight'],
+                 creationOptions = ['COMPRESS=LZW'],
+                 resampleAlg='bilinear', 
+                 xRes=np.abs(II['geoTransform'][1]), 
+                 yRes=np.abs(II['geoTransform'][-1]))
+    gdal.Warp(dst_filename, ref_dem_filename, options=warpoptions)
+
+
+    return dst_filename
 
 def mask_pgc( this_bounds, mask, pgc_subs, dec ):
     for key, sub in pgc_subs.items():
@@ -130,6 +155,16 @@ def mask_pgc( this_bounds, mask, pgc_subs, dec ):
     else:
         mask &= pgc_subs['_bitmask'].z
 
+def mask_by_ref_dem( this_bounds, mask, z, ref_dem_sub, dec, tol=50):
+    """Use a DEM to update the valid mask."""
+    ref_dem_sub.setBounds(*this_bounds, update=True)
+    keep = np.abs( z - ref_dem_sub.z ) < tol
+    if not np.all(keep):
+        keep = snd.binary_erosion(
+                snd.binary_erosion(keep, np.ones((1, dec), dtype=bool), border_value=1),
+                np.ones((dec,1), dtype=bool, border_value=1))
+        mask &= keep
+
 def filter_dem(*args, **kwargs):
 
     if isinstance(args[0], argparse.Namespace):
@@ -141,17 +176,16 @@ def filter_dem(*args, **kwargs):
             args += [key, str(value)]
         args=parse_input_args(args)
 
-    ds=gdal.Open(args.input_file);
-    driver = ds.GetDriver()
-    band=ds.GetRasterBand(1)
+    in_ds=gdal.Open(args.input_file);
+    driver = in_ds.GetDriver()
+    band = in_ds.GetRasterBand(1)
     noData=band.GetNoDataValue()
     if noData is None:
         noData=0.
 
     dec=int(args.decimate_by)
-    xform_in=np.array(ds.GetGeoTransform())
+    xform_in=np.array( in_ds.GetGeoTransform())
     dx=xform_in[1]
-    #ds=None
 
     if args.target_resolution is not None:
         dec_low=np.floor(args.target_resolution/dx)
@@ -216,16 +250,27 @@ def filter_dem(*args, **kwargs):
          pad=np.max([1, int(2.*w_error+2.*(w_smooth+N_erode)/dec)])
 
     stride=int(blocksize/dec)
-    in_sub=im_subset(0, 0, nX, nY, ds, pad_val=0, Bands=[1])
+    in_sub=im_subset(0, 0, nX, nY, in_ds, pad_val=0, Bands=[1])
 
+    ref_dem_sub=None
+    pgc_subs=None
     if args.pgc_masks:
-        pgc_subs={}
-        pgc_files = get_pgc_masks(args.input_file, args.pgc_url_file)
-
-        for key in ['_matchtag','_bitmask']:
-            sub_ds=gdal.Open(pgc_files[key])
-            pgc_subs[key] = im_subset(0, 0, nX, nY, sub_ds, pad_val=0, Bands=[1])
-
+        try:
+             pgc_subs={}
+             pgc_files = get_pgc_masks(args.input_file, args.pgc_url_file)
+             for key in ['_matchtag','_bitmask']:
+                  sub_ds=gdal.Open(pgc_files[key])
+                  pgc_subs[key] = im_subset(0, 0, nX, nY, sub_ds, pad_val=0, Bands=[1])
+        except IndexError as e:
+            print(f"failed to get pgc masks for input file: {args.input_file}")
+            print('\t'+str(e))
+            pgc_subs = None
+    # use the reference DEM if the PGC subs failed
+    if args.ref_dem is not None and pgc_subs is None:
+        print("Using DEM for masking")
+        ref_dem_file = get_ref_dem( args.ref_dem, args.input_file )
+        ref_dem_ds = gdal.Open(ref_dem_file, gdalconst.GA_ReadOnly)
+        ref_dem_sub = im_subset(0, 0, nX, nY, in_ds, pad_val=0, Bands=[1])
     last_time=time.time()
 
     for sub_count, out_sub in enumerate(im_subset(0, 0,  nX_out,  nY_out, outDs, pad_val=0, Bands=out_bands, stride=stride, pad=pad)):
@@ -241,8 +286,11 @@ def filter_dem(*args, **kwargs):
         mask[np.isnan(in_sub.z[0,:,:])]=0
         mask[in_sub.z[0,:,:]==noData]=0
 
-        if args.pgc_masks:
+        if args.pgc_masks and pgc_subs is not None:
             mask_pgc( this_bounds, mask, pgc_subs, dec)
+
+        if ref_dem_sub is not None:
+            mask_by_ref_dem(this_bounds, mask, z, ref_dem_sub, dec, tol=args.ref_dem_tol)
 
         out_temp=np.zeros([len(out_bands), stride, stride])
 
@@ -343,7 +391,7 @@ def filter_dem(*args, **kwargs):
     outDs.SetGeoTransform(tuple(xform_out))
     for b in out_bands:
         outDs.GetRasterBand(b).SetNoDataValue(np.NaN)
-    outDs.SetProjection(ds.GetProjection())
+    outDs.SetProjection(in_ds.GetProjection())
     outDs=None
 
 def main(args=None):
