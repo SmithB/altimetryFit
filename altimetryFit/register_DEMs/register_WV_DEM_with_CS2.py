@@ -40,8 +40,8 @@ def read_poca_data(bounds, t_DEM, tile_dir, max_dt=1):
 
     if D is not None:
         D=pc.data().from_list(D)
-    if D is None:
-        return D
+    if D is None or 'time' not in D.fields:
+        return None
 
     D.time = matlab_to_year(D.time)
     # remove suspect returns
@@ -59,7 +59,10 @@ def read_poca_data(bounds, t_DEM, tile_dir, max_dt=1):
 
 def calc_tide(D_pt, t_DEM, directory=None, model=None, mask_file=None):
     
-    mask_i=pc.grid.data().from_geotif(mask_file).interp(D_pt.x, D_pt.y)>0.01
+    bounds=[ np.array(bb)+np.array([-1.e4, 1.e4]) for bb in D_pt.bounds() ]
+
+    mask_i=pc.grid.data().from_geotif(mask_file, bounds=bounds).interp(D_pt.x, D_pt.y)>0.01
+
     if not np.any(mask_i):
         return
     temp=np.zeros_like(D_pt.x) 
@@ -168,7 +171,8 @@ def register_one_DEM(DEM_file=None, tile_dir=None,
     D_pt = read_poca_data((XR, YR), DEM.t, tile_dir, max_dt=max_dt)
     
     calc_tide(D_pt, DEM.t, directory=tide_directory, model=tide_model, mask_file=tide_mask_file)
-    D_pt.z -= D_pt.tide
+    if 'tide' in D_pt.fields:
+        D_pt.z -= D_pt.tide
        
     mask_file = DEM_file.replace('.tif','_plane_mask.tif')
     if os.path.isfile(mask_file):
@@ -176,8 +180,6 @@ def register_one_DEM(DEM_file=None, tile_dir=None,
         D_pt.index(keep)
     
     if D_pt.size < 5:
-        if 'x' in D_pt.fields:
-            D_pt.assign({'r': np.zeros_like(D_pt.x)+np.NaN})
         print('register_WV_DEM_with_IS2.py: not enough valid points found for ' + DEM.filename)
         write_json_output( D_out, out_files['json'])
         return
@@ -188,21 +190,29 @@ def register_one_DEM(DEM_file=None, tile_dir=None,
     D_pt.index( (D_pt.sigma < sigma_max) & \
                     np.isfinite(D_pt.sigma))
 
+    if D_pt.size < 5:
+        print('register_WV_DEM_with_IS2.py: not enough valid points found for ' + DEM.filename)
+        write_json_output( D_out, out_files['json'])
+        return
+
     mask0 = np.ones(D_pt.size, dtype=bool)
 
     print(f'\tregister one DEM: after initial search, found {np.sum(mask0)}')
 
     sigma0, sigma_scaled0, mask0, m0, r0, dh0 = rd.eval_DEM_shift([0,0], D_pt, DEM, sigma_min=sigma_min, iterations=50, mask=mask0)
+    try:
+        mask0, r0 = rd.edit_by_day(mask0, D_pt, DEM, r0, dh_max=5, sigma_min=0.1)
+        D_pt.assign({'r0':r0})
+        D_pt=D_pt[mask0]
+        mask0=mask0[mask0]
 
-    mask0, r0 = rd.edit_by_day(mask0, D_pt, DEM, r0, dh_max=5, sigma_min=0.1)
-    D_pt.assign({'r0':r0})
-    D_pt=D_pt[mask0]
-    mask0=mask0[mask0]
-
-    print("starting second iteration")
-    sigma, sigma_scaled, mask, m, r, dh  = rd.eval_DEM_shift([0,0], D_pt, DEM, sigma_min=sigma_min, iterations=50, mask=mask0)
-    D_pt.assign({'r':r})
-
+        print("starting second iteration")
+        sigma, sigma_scaled, mask, m, r, dh  = rd.eval_DEM_shift([0,0], D_pt, DEM, sigma_min=sigma_min, iterations=50, mask=mask0)
+        D_pt.assign({'r':r})
+    except Exception as e:
+        print('register_WV_DEM_with_IS2.py: iterative data editing steps failed for ' + DEM.filename)
+        print('\tUsing results from first iteration')
+        sigma, sigma_scaled, mask, m, r, dh = [sigma0, sigma_scaled0, mask0, m0, r0, dh0]
 
     if np.sum(mask) < 55:
         print('register_WV_DEM_with_IS2.py: not enough valid points found for ' + DEM.filename)
