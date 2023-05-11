@@ -81,6 +81,7 @@ parser.add_argument('--prelim', action='store_true')
 parser.add_argument('--tile_spacing', type=float, default=40000, help='distance between tile centers')
 parser.add_argument('--pad', type=float, default=1000)
 parser.add_argument('--region', type=str, default='GL')
+parser.add_argument('--out_dir', type=str)
 parser.add_argument('--environment','-e',  type=str)
 parser.add_argument('--feather', type=float)
 args, _=parser.parse_known_args()
@@ -99,7 +100,10 @@ fields=make_fields(max_coarse=np.minimum(40000, args.tile_W), \
                 compute_sigma=args.calc_sigma)
 xyc=make_tile_centers(in_dir, args.width)
 
-tile_dir_out=os.path.join(in_dir,f'{int(args.width/1000)}km_tiles')
+if args.out_dir is None:
+    tile_dir_out=os.path.join(in_dir,f'{int(args.width/1000)}km_tiles')
+else:
+    tile_dir_out=os.path.join(args.out_dir,f'{int(args.width/1000)}km_tiles')
 if not os.path.isdir(tile_dir_out):
     os.mkdir(tile_dir_out)
 

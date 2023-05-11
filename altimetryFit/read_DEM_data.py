@@ -167,6 +167,7 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
             Di.assign({'sigma':np.zeros_like(Di.x)+0.5})
         D_temp += [Di]
         meta['sensor'] = this_sensor_number
+        meta['filename'] = Di.filename
         meta_list += [meta]
         
     if subset_stack:
