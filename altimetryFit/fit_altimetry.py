@@ -7,7 +7,7 @@ Created on Tue Feb 26 17:12:48 2019
 
 Revision history [Authoritative history is in the git history]
 C/A 2021: Code developed by smithB, under the fit_OIB_aug.py filename
-Early 2022: Renamed to fit_altietry.py by smithB 
+Early 2022: Renamed to fit_altimetry.py by smithB
 Mid 2022: Tsutterley added lagrangian code to fit_OIB_aug.py
 April 2023: SmithB merged lagrangian code into fit_altimetry.py
 """
@@ -137,25 +137,24 @@ def mask_data_by_year(data, mask_dir):
         good[these_pts[(temp<0.5) & np.isfinite(temp)]] = 0
     data.index(good)
 
-def setup_lagrangian(data, lagrangian_epoch=None, velocity_files=None, 
-                lagrangian_ref_dem=None,
-                 SRS_proj4=None, xy0=None, Wxy=None, **kwargs):
-    # verbose output of lagrangian parameters
-    print(f'Advect parcels to {lagrangian_epoch:0.1f}')
-    print(f'Velocity File(s): {",".join(velocity_files)}')
-    # get latitude and longitude of the original data
-    data.get_latlon(proj4_string=SRS_proj4)
-    
-    if lagrangian_ref_dem is not None:
-        print(f'Subtracting reference dem from {lagrangian_ref_dem}')
-        data.assign(z0=data.z.copy())
-        data.z -= pc.grid.data().from_geotif(lagrangian_ref_dem, bounds=data.bounds()).interp(data.x, data.y)
-        data.index(np.isfinite(data.z))
+def setup_lagrangian(velocity_files=None, lagrangian_epoch=None,
+    SRS_proj4=None, xy0=None, Wxy=None, t_span=None, spacing=None, **kwargs):
 
-    # create an advection object with original coordinates and times
-    # calculate the number of seconds between data times and epoch
-    delta_time = (data.time - lagrangian_epoch)*24*3600*365.25
-    adv = pointAdvection.advection(x=data.x,y=data.y,t=delta_time)
+    # verbose output of lagrangian parameters
+    print(f'Velocity File(s): {",".join(velocity_files)}')
+    print(f'Advect parcels to {lagrangian_epoch:0.1f}')
+
+    # create arrays of grid coordinates
+    x = fd_grid([xy0[0] + np.array([-0.5, 0.5])*Wxy], [spacing['dz']], name='x')
+    y = fd_grid([xy0[1] + np.array([-0.5, 0.5])*Wxy], [spacing['dz']], name='y')
+    t = fd_grid([t_span], [spacing['dt']], name='t')
+    gridx,gridy = np.meshgrid(x.ctrs[0], y.ctrs[0])
+    # create advection object with buffer around grid
+    adv = pointAdvection.advection(
+        x=gridx.flatten(),
+        y=gridy.flatten(),
+        t=np.zeros((x.N_nodes*y.N_nodes))
+    )
     # read velocity image and trim to a buffer extent around points
     # use a wide buffer to encapsulate advections in fast moving areas
     if isinstance(velocity_files, str):
@@ -170,7 +169,7 @@ def setup_lagrangian(data, lagrangian_epoch=None, velocity_files=None,
                                'eU':np.array(ds.VelocitySeries[:, 3, ::-1,:]),
                                'eV':np.array(ds.VelocitySeries[:, 4, ::-1,:]),
                                'time':np.array(ds.time.data-
-                                               np.datetime64('2000-01-01'), 
+                                               np.datetime64('2000-01-01'),
                                                dtype='timedelta64[s]')\
                                          .astype(float)/24./3600./365.25 + 2000
                                }, t_axis=0)
@@ -186,14 +185,76 @@ def setup_lagrangian(data, lagrangian_epoch=None, velocity_files=None,
         vlist = [pc.grid.data().from_nc(v,field_mapping=dict(U='VX', V='VY')) \
             for v in velocity_files]
         adv.from_list(vlist, buffer=Wxy)
-        
         lagrangian_interpolation = 'linear'
 
     # convert velocity times to delta times from epoch
     adv.velocity.time = (adv.velocity.time - lagrangian_epoch)*24*3600*365.25
     adv.fill_velocity_gaps()
+
+    # advect coordinates to each output time
+    # calculate as displacements from original grid coordinates
+    dx = np.zeros((y.N_nodes, x.N_nodes, t.N_nodes))
+    dy = np.zeros((y.N_nodes, x.N_nodes, t.N_nodes))
+    # calculate bounds of original and advected coordinates
+    bounds = np.array([x.bds[0], y.bds[0]])
+    for i,ctrs in enumerate(t.ctrs[0]):
+        # advect points to output grid time
+        t0 = (ctrs - lagrangian_epoch)*24*3600*365.25
+        adv.translate_parcel(integrator='RK4', method=lagrangian_interpolation, t0=t0)
+        # reshape to output grid dimensions and
+        # calculate displacements from original coordinates
+        dx[:,:,i] = np.reshape(adv.x0, (y.N_nodes, x.N_nodes)) - gridx
+        dy[:,:,i] = np.reshape(adv.y0, (y.N_nodes, x.N_nodes)) - gridy
+        # update bounds
+        bounds[0][0] = np.min([bounds[0][0], np.nanmin(adv.x0)])
+        bounds[0][1] = np.max([bounds[0][1], np.nanmax(adv.x0)])
+        bounds[1][0] = np.min([bounds[1][0], np.nanmin(adv.y0)])
+        bounds[1][1] = np.max([bounds[1][1], np.nanmax(adv.y0)])
+        # update coordinates to advect to next field
+        # without recomputing advection from original point
+        adv.x[:] = np.copy(adv.x0)
+        adv.y[:] = np.copy(adv.y0)
+        adv.t[:] = np.copy(t0)
+
+    out_args=kwargs
+    out_args.update({'advection_obj':adv,
+            'method':lagrangian_interpolation,
+            'SRS_proj4':SRS_proj4,
+            'xy0':xy0,
+            'Wxy':Wxy,
+            'dx':dx,
+            'dy':dy,
+            'bds':bounds})
+    return out_args
+
+def update_data_for_lagrangian(data, lagrangian_ref_dem=None, **kwargs):
+    # default keyword arguments
+    kwargs.setdefault('advection_obj', pointAdvection.advection())
+    kwargs.setdefault('lagrangian_interpolation', 'linear')
+    kwargs.setdefault('lagrangian_epoch', 0)
+    kwargs.setdefault('SRS_proj4', None)
+    kwargs.setdefault('xy0', [None,None])
+    kwargs.setdefault('Wxy', 0)
+
+    # get latitude and longitude of the original data
+    data.get_latlon(proj4_string=kwargs['SRS_proj4'])
+
+    if lagrangian_ref_dem is not None:
+        print(f'Subtracting reference dem from {lagrangian_ref_dem}')
+        data.assign(z0=data.z.copy())
+        data.z -= pc.grid.data().from_geotif(lagrangian_ref_dem,
+            bounds=data.bounds()).interp(data.x, data.y)
+        data.index(np.isfinite(data.z))
+
+    # update advection object with original coordinates and times
+    adv = kwargs['advection_obj']
+    adv.x = data.x.copy()
+    adv.y = data.y.copy()
+    # calculate the number of seconds between data times and epoch
+    adv.t = (data.time - kwargs['lagrangian_epoch'])*24*3600*365.25
+
     # advect points to delta time 0
-    adv.translate_parcel(integrator='RK4', method=lagrangian_interpolation, t0=0)
+    adv.translate_parcel(integrator='RK4', method=kwargs['lagrangian_interpolation'], t0=0)
     # verbose output of displacement range
     mindist,maxdist = np.nanmin(adv.distance), np.nanmax(adv.distance)
     print('Min/Max Displacement: {0:0.1f} {1:0.1f}'.format(mindist,maxdist))
@@ -203,20 +264,19 @@ def setup_lagrangian(data, lagrangian_epoch=None, velocity_files=None,
     data.x=np.copy(adv.x0); data.y=np.copy(adv.y0)
 
     # reindex to coordinates that are within the domain after advection
-    domain_mask = (np.abs(data.x-xy0[0]) <= Wxy/2) & (np.abs(data.y-xy0[1]) <= Wxy/2)
+    domain_mask = (np.abs(data.x-kwargs['xy0'][0]) <= kwargs['Wxy']/2) & \
+        (np.abs(data.y-kwargs['xy0'][1]) <= kwargs['Wxy']/2)
     data.index(domain_mask)
     out_args=kwargs
-    out_args.update({'advection_obj':adv, 
-            'method':lagrangian_interpolation, 
-            'lagrangian_epoch':lagrangian_epoch,
-            'SRS_proj4':SRS_proj4, 
-            'xy0':xy0,
-            'Wxy':Wxy})
+    out_args.update(dict(advection_obj=adv))
     return out_args
 
-def update_output_grids_for_lagrangian(S, advection_obj=None, 
-                                       lagrangian_epoch=None, method=None, 
-                                       **kwargs):
+def update_output_grids_for_lagrangian(S, **kwargs):
+    # shape of smooth fit
+    ny,nx,nt = S['m']['dz'].shape
+    # set defaults
+    kwargs.setdefault('dx', np.zeros((ny,nx,nt)))
+    kwargs.setdefault('dy', np.zeros((ny,nx,nt)))
     # Advect output coordinates to output grid times.
     print('Advect grid coordinates from Lagrangian epoch')
     # reassign the unadvected locations to the data 'x' and 'y' fields
@@ -224,30 +284,8 @@ def update_output_grids_for_lagrangian(S, advection_obj=None,
     S['data'].y=S['data'].y_original.copy()
     for field in ['x_original','y_original']:
         S['data'].fields.remove(field)
-
-    # shape of smooth fit
-    ny,nx,nt = S['m']['dz'].shape
-    # replace coordinates of original lagrangian object
-    # with initial grid coordinates at lagrangian epoch
-    gridx,gridy = np.meshgrid(S['m']['dz'].x, S['m']['dz'].y)
-    advection_obj.x, advection_obj.y = (gridx.flatten(), gridy.flatten())
-    advection_obj.t = np.zeros((ny*nx))
-    # advect coordinates to each output time
-    # calculate as displacements from original grid coordinates
-    S['m']['dz'].assign(dx=np.zeros((ny,nx,nt)), dy=np.zeros((ny, nx, nt)))
-    for i,delta_time in enumerate(S['m']['dz'].time):
-        # advect points to output grid time
-        t0 = (delta_time - lagrangian_epoch)*24*3600*365.25
-        advection_obj.translate_parcel(integrator='RK4', method=method, t0=t0)
-        # reshape to output grid dimensions and
-        # calculate displacements from original coordinates
-        S['m']['dz'].dx[:,:,i] = np.reshape(advection_obj.x0, (ny,nx)) - gridx
-        S['m']['dz'].dy[:,:,i] = np.reshape(advection_obj.y0, (ny,nx)) - gridy
-        # update coordinates to advect to next field
-        # without recomputing advection from original point
-        advection_obj.x[:] = np.copy(advection_obj.x0)
-        advection_obj.y[:] = np.copy(advection_obj.y0)
-        advection_obj.t = np.zeros((ny*nx)) + np.copy(t0)
+    # add the advected grid coordinates to output smoothed fields
+    S['m']['dz'].assign(dx=kwargs['dx'], dy=kwargs['dy'])
 
 def interp_ds(ds, scale):
     for field in ds.fields:
@@ -409,6 +447,13 @@ def fit_altimetry(xy0, Wxy=4e4, \
         max_iterations=0
         repeat_res=None
 
+    if lagrangian:
+        lagrangian_dict = setup_lagrangian(
+            velocity_files=velocity_files,
+            lagrangian_epoch=lagrangian_epoch,
+            SRS_proj4=SRS_proj4, xy0=xy0, Wxy=Wxy,
+            t_span=t_span, spacing=spacing)
+
     if reread_file is not None:
         # get xy0 from the filename
         re_match=re.compile('E(.*)_N(.*).h5').search(reread_file)
@@ -451,11 +496,9 @@ def fit_altimetry(xy0, Wxy=4e4, \
         reference_epoch=len(np.arange(t_span[0], t_span[1], spacing['dt']))
 
     if lagrangian:
-        lagrangian_dict=setup_lagrangian( data,
-            lagrangian_epoch=lagrangian_epoch, 
+        lagrangian_dict=update_data_for_lagrangian( data,
             lagrangian_ref_dem=lagrangian_ref_dem,
-            velocity_files=velocity_files,
-            SRS_proj4=SRS_proj4, xy0=xy0, Wxy=Wxy)
+            **lagrangian_dict)
 
     # make every dataset a double
     for field in data.fields:
@@ -531,9 +574,9 @@ def fit_altimetry(xy0, Wxy=4e4, \
                      sigma_extra_masks=sigma_extra_masks,\
                      sensor_grid_bias_params=sensor_grid_bias_params,\
                      converge_tol_frac_TSE=0.005)
-    
+
     if lagrangian:
-        update_output_grids_for_lagrangian(S,**lagrangian_dict)
+        update_output_grids_for_lagrangian(S, **lagrangian_dict)
 
     return S, data, sensor_dict
 
