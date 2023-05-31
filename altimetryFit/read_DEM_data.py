@@ -57,21 +57,26 @@ def apply_DEM_metadata(D, DEM_meta_config):
     meta_file = D.filename.replace(rep_str,'_shift_est.h5')
     if not os.path.isfile(meta_file):
         return {'skip':False,'calc_fine_fit':True}, DEM_meta_config
-    
+
     meta={}
-    with h5py.File(meta_file,'r') as h5f:
-        for key in h5f['meta'].keys():
-            meta[key]=np.array(h5f['meta'][key])
-    if ( (not np.isfinite(meta['sigma'])) 
-        or meta['sigma'] > DEM_meta_config['sigma_max'] 
-        or (meta['delta_x']**2 + meta['delta_y']**2) > DEM_meta_config['max_offset']**2
-        or (('sigma_percentile' in meta) and (meta['sigma_percentile'] > DEM_meta_config['sigma_percentile_max']))
-       ):
-        return {'skip':True}, DEM_meta_config
-    #if meta['sigma_percentile'] > DEM_meta_config['sigma_percentile_for_fit']:
-    #    meta['calc_bias_grid']=True
-    #else:
-    #    meta['calc_bias_grid']=False
+    try:
+        with h5py.File(meta_file,'r') as h5f:
+            for key in h5f['meta'].keys():
+                meta[key]=np.array(h5f['meta'][key])
+        if ( (not np.isfinite(meta['sigma']))
+            or meta['sigma'] > DEM_meta_config['sigma_max']
+            or (meta['delta_x']**2 + meta['delta_y']**2) > DEM_meta_config['max_offset']**2
+            or (('sigma_percentile' in meta) and (meta['sigma_percentile'] > DEM_meta_config['sigma_percentile_max']))
+           ):
+            return {'skip':True}, DEM_meta_config
+        #if meta['sigma_percentile'] > DEM_meta_config['sigma_percentile_for_fit']:
+        #    meta['calc_bias_grid']=True
+        #else:
+        #    meta['calc_bias_grid']=False
+    except Exception as e:
+        print(f"read_DEM_data:apply_DEM_metadata: reading {meta_file}, encountered error:")
+        print(e)
+        print('----')
     meta['calc_grid_bias']=True
     delta_var = meta['sigma_unshifted']**2-meta['sigma']**2
     if  delta_var > DEM_meta_config['sigma_improvement_for_shift']**2 and\
@@ -87,13 +92,13 @@ def apply_DEM_metadata(D, DEM_meta_config):
     meta['tilt_applied']=True
     return meta, DEM_meta_config
 
-def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=20., 
-                  blockmedian_scale=100., N_target=None, subset_stack=False, year_offset=0.5, 
-                  DEM_meta_config=None, DEM_res=32, DEBUG=False):
+def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=20.,
+                  blockmedian_scale=100., N_target=None, subset_stack=False, year_offset=0.5,
+                  DEM_meta_config=None, DEM_res=32, DEBUG=False, target_area=None, time_range=None):
 
     if sensor_dict is None:
         sensor_dict={}
-        
+
     if not isinstance(gI_files, list):
         if os.path.isfile(gI_files):
             gI_files=[gI_files]
@@ -109,7 +114,15 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
         except TypeError:
             if DEBUG:
                 print(f"No data found for file: {this_file}")
-            
+
+    if time_range is not None:
+        D = [Di  for Di in D if (Di.size > 0 ) and not (
+             (np.max(Di.time) < time_range[0]) or \
+                (np.min(Di.time) > time_range[1])) ]
+
+    if target_area is None:
+        target_area=W['x']*W['y']
+
     if D is None:
         return None, sensor_dict
     if len(sensor_dict) > 0:
@@ -118,22 +131,22 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
         first_key_num=0
     key_num=0
     temp_sensor_dict=dict()
-    
+
     problem_DEMs = read_problem_DEM_file(gI_files)
-    
+
     if DEM_meta_config is None:
         DEM_meta_config={}
-    
+
     # check if there is a _plane_mask.tif file for each DEM, edit if needed.  mask_files indicate 1=discard / 0=keep
     for Di in D:
         mask_file = Di.filename.replace('.tif','_plane_mask.tif')
         if os.path.isfile(mask_file):
             keep = pc.grid.data().from_geotif(mask_file).interp(Di.x, Di.y) < 0.1
             Di.index(keep)
-    
+
     if D is None or len(D)==0:
         return None, sensor_dict, None
-    
+
     # if N_target is specified, adjust the blockmedian scale to avoid reading more than
     # N_target points
     if N_target is not None:
@@ -141,7 +154,7 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
         N_unique = len(np.unique(np.round(np.concatenate([Di.x+1j*Di.y for Di in D])/DEM_res)))
         overlap = N_total/N_unique # average number of repeats per cell
         if N_total > N_target:
-            blockmedian_scale = np.maximum(blockmedian_scale, np.sqrt(W['x']*W['y']/(N_target/overlap)))
+            blockmedian_scale = np.maximum(blockmedian_scale, np.sqrt(target_area/(N_target/overlap)))
             print(f'\t read_DEM_data: DEM blockmedian scale = {np.round(blockmedian_scale)}')
 
     # copy valid DEMs into a temporary list
@@ -169,12 +182,12 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
         meta['sensor'] = this_sensor_number
         meta['filename'] = Di.filename
         meta_list += [meta]
-        
+
     if subset_stack:
         # subset the DEMs so that there is about one per year
         this_bin_width=np.maximum(400, 2*blockmedian_scale)
         DEM_number_list=subset_DEM_stack(D_temp, xy0, W['x'], \
-                                         bin_width=this_bin_width, 
+                                         bin_width=this_bin_width,
                                          year_offset=year_offset)
     else:
         DEM_number_list=[int(Di.sensor[0]) for Di in D_temp]
@@ -187,5 +200,5 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
         sensor_dict[count+first_key_num] = temp_sensor_dict[num]
         new_meta[count+first_key_num] = meta_list[num]
         new_meta[count+first_key_num]['sensor'] = count+first_key_num
-        
+
     return new_D, sensor_dict, new_meta

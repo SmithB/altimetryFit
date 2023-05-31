@@ -20,7 +20,7 @@ def laser_key():
     return {'ICESat1':1, 'ICESat2':2, 'ATM':3, 'LVIS':4, 'riegl':5}
 
 def find_gI_files(gI_files):
-    
+
     out_list=[]
     if not isinstance(gI_files, (list, tuple)):
         if isinstance(gI_files, dict):
@@ -45,7 +45,7 @@ def read_ICESat(xy0, W, gI_files, sensor=1, hemisphere=-1, DEM=None):
         if hemisphere==-1:
             # ICESat time is seconds after Noon, Jan 1 2000.
             # Convert to years after Midnight, Jan 1 2000
-            # full calculation: 
+            # full calculation:
             #t_is1=np.datetime64('2000-01-01T12:00:00')\
             #    + D.time*np.timedelta64(1,'s')
             #D.time = 2000. + (t_is1 \
@@ -82,7 +82,7 @@ def read_ATM(xy0, W, gI_files, sensor=3, blockmedian_scale=100.):
     D0=[]
     for file in gI_files:
         D0 += pc.geoIndex().from_file(file).query_xy((px.ravel(), py.ravel()), fields=fields)
-        
+
     if D0 is None:
         return D0
     for ind, D in enumerate(D0):
@@ -99,7 +99,7 @@ def read_ATM(xy0, W, gI_files, sensor=3, blockmedian_scale=100.):
         D.assign({'sensor':np.zeros_like(D.time)+sensor})
         D.time=matlab_to_year(D.time)
         D0[ind]=D.copy_subset(good, datasets=['x','y','z','time',
-                                              'sigma','sigma_corr','sensor', 
+                                              'sigma','sigma_corr','sensor',
                                               'slope_mag'])
         if blockmedian_scale is not None:
             D0[ind].blockmedian(blockmedian_scale)
@@ -119,7 +119,7 @@ def read_LVIS(xy0, W, gI_file, sensor=4, blockmedian_scale=100):
         if not np.any(good):
             continue
         D.assign({  'sigma': np.sqrt((4*slope_mag)**2+D.noise_50m**2+0.05**2),
-                    'sigma_corr':0.025+np.zeros_like(D.time), 
+                    'sigma_corr':0.025+np.zeros_like(D.time),
                     'slope_mag':slope_mag})
         #if D.size==D.zb.size:
         #    # some LVIS data have a zb field, which is a better estimator of surface elevation than the 'z' field
@@ -127,7 +127,7 @@ def read_LVIS(xy0, W, gI_file, sensor=4, blockmedian_scale=100):
         D.assign({'sensor':np.zeros_like(D.time)+sensor})
         D.time=matlab_to_year(D.time)
         D0[ind]=D.copy_subset(good, datasets=['x','y','z','time','sigma',
-                                              'sigma_corr','sensor', 
+                                              'sigma_corr','sensor',
                                               'slope_mag'])
         if D0[ind].size > 5:
             D0[ind].blockmedian(blockmedian_scale)
@@ -136,10 +136,12 @@ def read_LVIS(xy0, W, gI_file, sensor=4, blockmedian_scale=100):
 
 def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
               bm_scale=None, N_target=None,\
+              target_area=None,\
               SRS_proj4=None,\
               mask_file=None, DEM_file=None, \
-              geoid_file=None, water_mask_threshold=None, 
-              mask_floating=False, dem_subset_TF=False):
+              geoid_file=None, water_mask_threshold=None,
+              mask_floating=False, time_range=None,
+              dem_subset_TF=False):
     """
     Read laser-altimetry and DEM data from geoIndex files.
 
@@ -157,6 +159,8 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
         dictionary giving the scale of the blockmedian to apply for laser and DEM data. The default is None.
     N_target : dict, optional
         dictionary giving the maximum number of data from lasers and DEMs. The default is None.
+    target_area : float, optional
+        The expected area of the domain after data are selected. If None, will be calculated from W.  The default is None
     SRS_proj4 : str, optional
         projection specification. The default is None.
     mask_file : str, optional
@@ -169,6 +173,8 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
         data less than this elevation above the geoid are rejected. The default is None.
     mask_floating : str, optional
         mask file specifying floating data. The default is False.
+    time_range : iterable of floats, optional
+        time range within which are accepted.  The default is None
     dem_subset_TF : bool, optional
         If true, DEM data are subsetted to provide one value per year. The default is False.
 
@@ -194,11 +200,11 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
         bm_scale={'laser':100, 'DEM':200}
 
     if 'ICESat2' in GI_files:
-        
-        D = read_ICESat2(xy0, W, find_gI_files(GI_files['ICESat2']), 
+
+        D = read_ICESat2(xy0, W, find_gI_files(GI_files['ICESat2']),
                     SRS_proj4=SRS_proj4,
-                    sensor=laser_dict['ICESat2'], 
-                    cplx_accept_threshold=0.25, 
+                    sensor=laser_dict['ICESat2'],
+                    cplx_accept_threshold=0.25,
                     blockmedian_scale=bm_scale['laser'],
                     N_target=N_target['laser'])
         for Di in D:
@@ -208,14 +214,14 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
                 # remove cycle 1 (overconstrains 2018-2019 based on not enough data)
                 Di.index(Di.time > 2019.0)
     if 'ICESat' in GI_files:
-        D_IS = read_ICESat(xy0, W, find_gI_files(GI_files['ICESat1']), 
+        D_IS = read_ICESat(xy0, W, find_gI_files(GI_files['ICESat1']),
                            sensor=laser_key()['ICESat1'],
                            hemisphere=hemisphere, DEM=DEM)
         if D_IS is not None:
             D += D_IS
     if 'LVIS' in GI_files:
-        D_LVIS=read_LVIS(xy0, W, 
-                         find_gI_files(GI_files['LVIS']), 
+        D_LVIS=read_LVIS(xy0, W,
+                         find_gI_files(GI_files['LVIS']),
                          blockmedian_scale=bm_scale['laser'], sensor=laser_dict['LVIS'])
         if D_LVIS is not None:
             D += D_LVIS
@@ -232,8 +238,10 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
             year_offset=0.5
         D_DEM, sensor_dict, DEM_meta_dict = read_DEM_data(xy0, W, sensor_dict, \
                             gI_files=find_gI_files(GI_files['DEM']), \
-                            hemisphere=hemisphere, 
+                            hemisphere=hemisphere,
                             blockmedian_scale=bm_scale['DEM'],
+                            time_range=time_range,
+                            target_area=target_area,
                             N_target=N_target['DEM'],
                             subset_stack=dem_subset_TF, year_offset=year_offset)
         if D_DEM is not None:
