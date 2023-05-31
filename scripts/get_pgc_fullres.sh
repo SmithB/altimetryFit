@@ -22,7 +22,7 @@ done
 
 #wget -q $dem_url && wget -q $match_url && wget -q $mask_url || $(echo "COULD NOT DOWNLOAD"; exit 1)
  
-dem_filter.py $dem_file $filt_file @default_args.txt
+[ -f default_args.txt ] && dem_filter.py $dem_file $filt_file @default_args.txt
 
 #[ -f $filt_file ] && $(rm $dem_file $match_file $mask_file)
 
