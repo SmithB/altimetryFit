@@ -170,10 +170,13 @@ def write_output(D_out, D_BM, filename, D_pt=None, DEBUG=False):
 
     out_files=out_filenames(filename)
 
+    D_out.to_h5(out_files['h5'], group='meta', extensible=False, replace=True)
+
     if D_pt is not None and DEBUG:
         D_pt.to_h5(out_files['h5'], group='data', extensible=False, replace=False)
 
     write_json_output(D_out, out_files['json'])
+
     if D_BM is not None:
         D_BM.to_h5(out_files['h5'], group='stats_2km', replace=False)
 
