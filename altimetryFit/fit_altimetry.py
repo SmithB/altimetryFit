@@ -96,7 +96,7 @@ def custom_edits(data):
     data.index(bad==0)
 
 def apply_tides(D, xy0, W, tide_mask_file, tide_directory, tide_model, EPSG=3031):
-    #read in the tide mask (for Antarctica) and apply dac and tide to ice-shelf elements
+    # read in the tide mask (for Antarctica) and apply dac and tide to ice-shelf elements
     # the tide mask should be 1 for non-grounded points (ice shelves?), zero otherwise
     tide_mask = pc.grid.data().from_geotif(tide_mask_file, bounds=[np.array([-0.6, 0.6])*W+xy0[0], np.array([-0.6, 0.6])*W+xy0[1]])
     is_els=tide_mask.interp(D.x, D.y) > 0.5
@@ -179,7 +179,7 @@ def setup_lagrangian(velocity_files=None, lagrangian_epoch=None,
                 lagrangian_interpolation = 'linear'
         else:
             adv.from_nc(velocity_files[0], buffer=Wxy)
-            lagrangian_interpolation = 'spline'
+            lagrangian_interpolation = 'linear'
     else:
         vlist = [pc.grid.data().from_nc(v,field_mapping=dict(U='VX', V='VY')) \
             for v in velocity_files]
