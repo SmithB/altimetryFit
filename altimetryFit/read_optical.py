@@ -141,7 +141,7 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
               mask_file=None, DEM_file=None, \
               geoid_file=None, water_mask_threshold=None,
               mask_floating=False, time_range=None,
-              dem_subset_TF=False):
+              dem_subset_TF=False, seg_diff_tol=4):
     """
     Read laser-altimetry and DEM data from geoIndex files.
 
@@ -206,7 +206,8 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
                     sensor=laser_dict['ICESat2'],
                     cplx_accept_threshold=0.25,
                     blockmedian_scale=bm_scale['laser'],
-                    N_target=N_target['laser'])
+                    N_target=N_target['laser'],
+                    seg_diff_tol=seg_diff_tol)
         for Di in D:
             Di.assign({'slope_mag':np.sqrt(DEM.interp(Di.x, Di.y, field='z_x')**2+
                                            DEM.interp(Di.x, Di.y, field='z_y')**2)})
