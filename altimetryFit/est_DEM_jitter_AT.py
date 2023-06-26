@@ -122,9 +122,9 @@ def est_along_track_jitter(filename, url_list_file=None, expected_rms_grad=1.e-5
 
     return  {'R0' : pc.RDE(D.r0[valid_data]),
              'poly' : poly,
-             'sigma0':np.std(D.r0[valid_data]),
+             'sigma_uncorr':np.std(D.r0[valid_data]),
              'R' : pc.RDE((D.r0-b_est)[valid_data]),
-             'sigma0' : np.std((D.r0-b_est)[valid_data]),
+             'sigma_corr' : np.std((D.r0-b_est)[valid_data]),
              'bias' : m[:-3],
              'x_bias' : this_grid.ctrs[0],
              'tilt_model' : m[-3:],
@@ -156,7 +156,8 @@ def main():
                                res=args.res)
     
     out_precision={'R0': 1.e-3,
-                   'sigma0': 1.e-3,
+                   'sigma_uncorr': 1.e-4,
+                   'sigma_corr': 1.e-4,
                    'bias': 1.e-3,
                    'x_bias': 1.e-3,
                    'tilt_model': 1.e-6,
