@@ -141,6 +141,7 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
 
         D.z[valid==0] = np.NaN
         D.z[D.quality==1] = np.NaN
+        #D.index(np.isfinite(D.z))
         if blockmedian_scale is not None:
             if blockmedian_scale is not None:
                 # blockmedian by the mean of strong and weak beams

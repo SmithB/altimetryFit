@@ -26,7 +26,7 @@ os.environ['OPENBLAS_NUM_THREADS']="1"
 
 import numpy as np
 #import matplotlib.pyplot as plt
-from LSsurf.smooth_xytb_fit_aug import smooth_xytb_fit_aug
+from LSsurf.smooth_fit import smooth_fit
 from LSsurf import fd_grid
 from altimetryFit.reread_data_from_fits import reread_data_from_fits
 import pointCollection as pc
@@ -138,7 +138,7 @@ def mask_data_by_year(data, mask_dir):
         good[these_pts[(temp<0.5) & np.isfinite(temp)]] = 0
     data.index(good)
 
-def setup_lagrangian(velocity_files=None, lagrangian_epoch=None,
+def setup_lagrangian(velocity_files=None, lagrangian_epoch=None, reference_epoch=None,
     SRS_proj4=None, xy0=None, Wxy=None, t_span=None, spacing=None, verbose=False,
     **kwargs):
     SPY=365.25*24*3600
@@ -147,11 +147,40 @@ def setup_lagrangian(velocity_files=None, lagrangian_epoch=None,
         print(f'Velocity File(s): {",".join(velocity_files)}')
         print(f'Advect parcels to {lagrangian_epoch:0.1f}')
 
+    # make the ouput arguments dictionary
+    out_args=kwargs
+    out_args.update({
+            'lagrangian_epoch':lagrangian_epoch,
+            'SRS_proj4':SRS_proj4,
+            'xy0':xy0,
+            'Wxy':Wxy})
+    if lagrangian_epoch is None:
+        # calculate the lagrangian epoch based on the reference time
+        lagrangian_epoch = fd_grid([t_span], [spacing['dt']], name='t').ctrs[0][reference_epoch]
+        print(f"lagrangian epoch is {lagrangian_epoch}")
+
     bounds=[xyi + np.array([-0.5, 0.5])*Wxy for xyi in xy0]
     # create arrays of grid coordinates
-    x = fd_grid([bounds[0]], [spacing['dz']], name='x')
-    y = fd_grid([bounds[1]], [spacing['dz']], name='y')
-    gridx,gridy = np.meshgrid(x.ctrs[0], y.ctrs[0])
+    x = fd_grid([bounds[0]], [spacing['dz']], name='x').ctrs[0]
+    y = fd_grid([bounds[1]], [spacing['dz']], name='y').ctrs[0]
+
+    interpolator_save_file=os.path.splitext(velocity_files[0])[0] +'_xy01_grids.h5'
+    if os.path.isfile(interpolator_save_file):
+        xy0_obj=pc.grid.data().from_h5(interpolator_save_file,group='xy0')
+        xy1_obj=pc.grid.data().from_h5(interpolator_save_file,group='xy1')
+        gridy, gridx, gridt = np.meshgrid(y, x,
+                                          (np.array(t_span)-lagrangian_epoch)*SPY, indexing='ij')
+        x1=xy1_obj.interp(gridx.ravel(), gridy.ravel(), gridt.ravel(), field='x1')
+        y1=xy1_obj.interp(gridx.ravel(), gridy.ravel(), gridt.ravel(), field='y1')
+        bounds_full=[[np.min(x1), np.max(x1)],[np.min(y1), np.max(y1)]]
+        out_args.update({'xy1_obj': xy1_obj,
+            'xy0_obj': xy0_obj,
+            'bds':bounds_full})
+        return out_args
+    else:
+        xy0_obj, xy1_obj = None, None
+
+    gridx,gridy = np.meshgrid(x, y)
     # create advection object with buffer around grid
     adv = pointAdvection.advection(
         x=gridx.flatten(),
@@ -163,18 +192,25 @@ def setup_lagrangian(velocity_files=None, lagrangian_epoch=None,
     if isinstance(velocity_files, str):
         velocity_files=[velocity_files]
     if len(velocity_files) == 1:
-        if 'NSIDC' in os.path.basename(velocity_files[0]):
+
+        if 'NSIDC-0731' in os.path.basename(velocity_files[0]):
             with xr.open_dataset(velocity_files[0]) as ds:
+                t_vel=np.array(
+                    ds.time.data-np.datetime64('2000-01-01'),
+                    dtype='timedelta64[s]').astype(float)/SPY + 2000
+                if t_span is not None:
+                    t_ind = np.flatnonzero(
+                        (t_vel >= (t_span[0] - 1))
+                        & (t_vel <= (t_span[1] + 1)))
+                else:
+                    t_ind = np.flatnonzero(np.ones_like(t_vel))
                 adv.from_dict({'x':np.array(ds.x),
                                'y':np.array(ds.y)[::-1],
-                               'U':np.array(ds.VelocitySeries[:, 0, ::-1,:]),
-                               'V':np.array(ds.VelocitySeries[:, 1, ::-1,:]),
-                               'eU':np.array(ds.VelocitySeries[:, 3, ::-1,:]),
-                               'eV':np.array(ds.VelocitySeries[:, 4, ::-1,:]),
-                               'time':np.array(ds.time.data-
-                                               np.datetime64('2000-01-01'),
-                                               dtype='timedelta64[s]')\
-                                         .astype(float)/SPY + 2000
+                               'U':np.array(ds.VelocitySeries[t_ind, 0, ::-1,:]),
+                               'V':np.array(ds.VelocitySeries[t_ind, 1, ::-1,:]),
+                               'eU':np.array(ds.VelocitySeries[t_ind, 3, ::-1,:]),
+                               'eV':np.array(ds.VelocitySeries[t_ind, 4, ::-1,:]),
+                               'time': t_vel[t_ind]
                                }, t_axis=0)
                 lagrangian_interpolation = 'linear'
         else:
@@ -192,14 +228,14 @@ def setup_lagrangian(velocity_files=None, lagrangian_epoch=None,
 
     # create an xy1 interpolator to find the locations that might have contributed
     # points to the dataset
-    xy1_dict = adv.xy1_interpolator(bounds=bounds,
+    xy1_obj = adv.xy1_interpolator(bounds=bounds,
                                    t_range=(np.array(t_span)-lagrangian_epoch)*SPY,
                                    t_step=0.25*SPY)
-    bounds_full = [[np.nanmin(ii.values), np.nanmax(ii.values)] for ii in
-                           [xy1_dict['x'], xy1_dict['y']]]
+    bounds_full = [[np.nanmin(ii.values), np.nanmax(ii.values)] for ii in\
+                           [xy1_obj.x, xy1_obj.y]]
 
     # create an xy0 interpolator to find final locations for each point
-    xy0_dict =adv.xy0_interpolator(bounds=bounds_full,
+    xy0_obj =adv.xy0_interpolator(bounds=bounds_full,
                                    t_range=(np.array(t_span)-lagrangian_epoch)*SPY,
                                    t_step=0.25*SPY)
 
@@ -211,8 +247,8 @@ def setup_lagrangian(velocity_files=None, lagrangian_epoch=None,
             'SRS_proj4':SRS_proj4,
             'xy0':xy0,
             'Wxy':Wxy,
-            'xy1_dict':xy1_dict,
-            'xy0_dict': xy0_dict,
+            'xy1_obj': xy1_obj,
+            'xy0_obj': xy0_obj,
             'bds':bounds_full})
     return out_args
 
@@ -246,40 +282,36 @@ def update_data_for_lagrangian(data, lagrangian_ref_dem=None, **kwargs):
     #adv.translate_parcel(integrator='RK4', method=kwargs['lagrangian_interpolation'], t0=0)
     # xy0_interpolator(bounds=None, t_range=None, t_step=None)
 
-    x0 = kwargs['xy0_dict']['x']((data.y, data.x, t_lag))
-    y0 = kwargs['xy0_dict']['y']((data.y, data.x, t_lag))
+    x0 = kwargs['xy0_obj'].interp(data.x, data.y, t_lag, field='x0')
+    y0 = kwargs['xy0_obj'].interp(data.x, data.y, t_lag, field='y0')
 
-    # verbose output of displacement range
-    #mindist,maxdist = np.nanmin(adv.distance), np.nanmax(adv.distance)
-    #print('Min/Max Displacement: {0:0.1f} {1:0.1f}'.format(mindist,maxdist))
-    # save the original coordinates:
-    data.assign(x_original=data.x.copy(), y_original=data.y.copy())
-    # replace x and y with the advected coordinates
-    data.x=np.copy(x0); data.y=np.copy(y0)
+    if 'move_points' in kwargs and kwargs['move_points']:
+        # save the original coordinates:
+        data.assign(x_original=data.x.copy(), y_original=data.y.copy())
+        # replace x and y with the advected coordinates
+        data.x=np.copy(x0); data.y=np.copy(y0)
+        # reindex to coordinates that are within the domain after advection
+        domain_mask = (np.abs(data.x-kwargs['xy0'][0]) <= kwargs['Wxy']/2) & \
+            (np.abs(data.y-kwargs['xy0'][1]) <= kwargs['Wxy']/2)
+        data.index(domain_mask)
+    else:
+        # save additional x_original and y_original points
+        data.assign(x_lag=np.copy(x0), y_lag=np.copy(y0))
 
-    # reindex to coordinates that are within the domain after advection
-    domain_mask = (np.abs(data.x-kwargs['xy0'][0]) <= kwargs['Wxy']/2) & \
-        (np.abs(data.y-kwargs['xy0'][1]) <= kwargs['Wxy']/2)
-    data.index(domain_mask)
     out_args=kwargs
-    #out_args.update(dict(advection_obj=adv))
     return out_args
 
-def update_output_grids_for_lagrangian(S, **kwargs):
-    # shape of smooth fit
-    ny,nx,nt = S['m']['dz'].shape
-    # set defaults
-    kwargs.setdefault('dx', np.zeros((ny,nx,nt)))
-    kwargs.setdefault('dy', np.zeros((ny,nx,nt)))
+def update_output_data_for_lagrangian(S, **kwargs):
+
     # Advect output coordinates to output grid times.
-    print('Advect grid coordinates from Lagrangian epoch')
+    #print('Advect grid coordinates from Lagrangian epoch')
+    if ['x_original'] in S['data'].fields:
     # reassign the unadvected locations to the data 'x' and 'y' fields
-    S['data'].x=S['data'].x_original.copy()
-    S['data'].y=S['data'].y_original.copy()
-    for field in ['x_original','y_original']:
-        S['data'].fields.remove(field)
-    # add the advected grid coordinates to output smoothed fields
-    S['m']['dz'].assign(dx=kwargs['dx'], dy=kwargs['dy'])
+        S['data'].x=S['data'].x_original.copy()
+        S['data'].y=S['data'].y_original.copy()
+        for field in ['x_original','y_original']:
+            S['data'].fields.remove(field)
+
 
 def interp_ds(ds, scale):
     for field in ds.fields:
@@ -405,20 +437,22 @@ def fit_altimetry(xy0, Wxy=4e4, \
             tide_mask_file=None,\
             error_res_scale=None,\
             avg_mask_directory=None, \
-            lagrangian=False, \
             velocity_files=None, \
-            lagrangian_epoch=2000.0, \
-            lagrangian_ref_dem=None,\
+            lagrangian_dict=None, \
             tide_directory=None, \
             tide_model='CATS2008', \
             year_mask_dir=None, \
             avg_scales=None,\
             bias_params=['time_corr','sensor','spot'],\
+            seg_diff_tol=4,\
             DEM_grid_bias_params=None):
     """
         Wrapper for smooth_xytb_fit_aug that can find data and set the appropriate parameters
     """
     print("fit_OIB: working on %s" % out_name)
+
+    # default:
+    lagrangian_coords=None
 
     SRS_proj4=get_SRS_proj4(hemisphere)
     bias_model_args={}
@@ -429,6 +463,10 @@ def fit_altimetry(xy0, Wxy=4e4, \
 
     W={'x':Wxy, 'y':Wxy,'t':np.diff(t_span)}
     ctr={'x':xy0[0], 'y':xy0[1], 't':np.mean(t_span)}
+
+
+    bds={ dim: c_i+np.array([-0.5, 0.5])*W[dim]  for dim, c_i in ctr.items()}
+
     if out_name is not None:
         try:
             out_name=out_name %(xy0[0]/1000, xy0[1]/1000)
@@ -441,17 +479,24 @@ def fit_altimetry(xy0, Wxy=4e4, \
         max_iterations=0
         repeat_res=None
 
-    if lagrangian:
-        if lagrangian_epoch is None:
-            # calculate the lagrangian epoch based on the reference time
-            lagrangian_epoch = fd_grid(t_span, [spacing['dt']], name='t').ctrs[0][reference_epoch]
-            print(f'lagrangian epoch is {lagrangian_epoch}')
+    pad=np.array([-1.e4, 1.e4])
+    mask_data=pc.grid.data().from_h5(mask_file,bounds=[bds['x']+pad, bds['y']+pad])
 
+    if lagrangian_dict is not None:
         lagrangian_dict = setup_lagrangian(
-            velocity_files=velocity_files,
-            lagrangian_epoch=lagrangian_epoch,
             SRS_proj4=SRS_proj4, xy0=xy0, Wxy=Wxy,
-            t_span=t_span, spacing=spacing)
+            t_span=t_span, spacing=spacing, reference_epoch=reference_epoch,
+            **lagrangian_dict)
+
+        if lagrangian_dict['lagrangian_dz_spacing'] is not None:
+            lagrangian_dict['move_points'] = False
+            spacing['lagrangian_dz']= lagrangian_dict['lagrangian_dz_spacing']
+            E_RMS0['lagrangian_dz'] = lagrangian_dict['lagrangian_dz_E_RMS']
+            E_RMS0['lagrangian_dzdx'] = lagrangian_dict['lagrangian_dz_E_RMS_grad']
+            lagrangian_coords=['y_lag','x_lag']
+        else:
+            # move points by default
+            lagrangian_dict['move_points'] = True
 
     if reread_file is not None:
         # get xy0 from the filename
@@ -460,7 +505,7 @@ def fit_altimetry(xy0, Wxy=4e4, \
         data=pc.data().from_h5(reread_file, group='data')
         sensor_dict=make_sensor_dict(reread_file)
     elif reread_dirs is None:
-        if lagrangian:
+        if lagrangian_dict is not None and lagrangian_dict['move_points']:
             this_xy0=[*map(np.mean, lagrangian_dict['bds'])]
             this_W=this_W={'x':np.diff(lagrangian_dict['bds'][0]),
                            'y':np.diff(lagrangian_dict['bds'][1]),
@@ -477,7 +522,8 @@ def fit_altimetry(xy0, Wxy=4e4, \
                                  water_mask_threshold=water_mask_threshold, \
                                  time_range=t_span, \
                                  DEM_file=DEM_file, \
-                                 hemisphere=hemisphere)
+                                 hemisphere=hemisphere,
+                                 seg_diff_tol=seg_diff_tol)
         for ind, Di in enumerate(D):
             if Di is None:
                 continue
@@ -503,9 +549,8 @@ def fit_altimetry(xy0, Wxy=4e4, \
     if reference_epoch is None:
         reference_epoch=len(np.arange(t_span[0], t_span[1], spacing['dt']))
 
-    if lagrangian:
+    if lagrangian_dict is not None:
         lagrangian_dict=update_data_for_lagrangian( data,
-            lagrangian_ref_dem=lagrangian_ref_dem,
             **lagrangian_dict)
 
     # make every dataset a double
@@ -551,7 +596,6 @@ def fit_altimetry(xy0, Wxy=4e4, \
 
     avg_masks=None
     if avg_mask_directory is not None:
-
         avg_masks = {os.path.basename(file).replace('.tif',''):pc.grid.data().from_geotif(file) for file in \
                      glob.glob(avg_mask_directory+'/*.tif')}
 
@@ -562,8 +606,9 @@ def fit_altimetry(xy0, Wxy=4e4, \
                          'DEM': ~np.in1d(data.sensor, laser_sensors)}
     # run the fit
     print("="*50)
-    print("about to run smooth_xytb_fit_aug with params="+str(bias_params))
-    S=smooth_xytb_fit_aug(data=data, ctr=ctr, W=W, spacing=spacing, E_RMS=E_RMS0,
+    #N.B. Using smooth_fit instead of smooth_xytb_fit_aug
+    print("about to run smooth_fit with bias params="+str(bias_params))
+    S=smooth_fit(data=data, ctr=ctr, W=W, spacing=spacing, E_RMS=E_RMS0,
                      reference_epoch=reference_epoch, compute_E=compute_E,
                      bias_params=bias_params,
                      repeat_res=repeat_res, max_iterations=max_iterations,
@@ -571,7 +616,8 @@ def fit_altimetry(xy0, Wxy=4e4, \
                      data_slope_sensors=DEM_sensors,\
                      E_slope_bias=E_slope_bias,\
                      mask_file=mask_file,\
-                     dzdt_lags=dzdt_lags, \
+                     mask_data=mask_data,\
+                     dzdt_lags=dzdt_lags,\
                      bias_model_args = bias_model_args, \
                      bias_nsigma_edit=bias_nsigma_edit, \
                      bias_nsigma_iteration=bias_nsigma_iteration, \
@@ -581,10 +627,11 @@ def fit_altimetry(xy0, Wxy=4e4, \
                      avg_masks=avg_masks, \
                      sigma_extra_masks=sigma_extra_masks,\
                      sensor_grid_bias_params=sensor_grid_bias_params,\
+                     lagrangian_coords=lagrangian_coords,\
                      converge_tol_frac_TSE=0.005)
 
-    if lagrangian:
-        update_output_grids_for_lagrangian(S, **lagrangian_dict)
+    if lagrangian_dict is not None:
+        update_output_data_for_lagrangian(S, **lagrangian_dict)
 
     return S, data, sensor_dict
 
@@ -639,6 +686,9 @@ def main(argv):
     parser.add_argument('--velocity_files', type=path, nargs='+', help='lagrangian velocity files.  May contain multiple time values.')
     parser.add_argument('--lagrangian_epoch', type=float, help='time (decimal year) to which data will be advected')
     parser.add_argument('--lagrangian_ref_dem', type=path, help='dem to be subtracted from data before advection')
+    parser.add_argument('--lagrangian_dz_spacing', type=float, help='field to estimate moving topography, ignores lagrangian argument')
+    parser.add_argument('--lagrangian_dz_E_RMS', type=float, help='Expected RMS for moving topography')
+    parser.add_argument('--lagrangian_dz_E_RMS_grad', type=float, help='Expected RMS gradient for moving topography')
     parser.add_argument('--mask_file', type=path)
     parser.add_argument('--geoid_file', type=path)
     parser.add_argument('--water_mask_threshold', type=float)
@@ -653,7 +703,7 @@ def main(argv):
     parser.add_argument('--error_res_scale','-s', type=float, nargs=2, default=[4, 2], help='if the errors are being calculated (see calc_error_file), scale the grid resolution in x and y to be coarser')
     parser.add_argument('--max_mem', type=float, default=15., help='maximum memory the program is allowed to use, in GB.')
     args, unk=parser.parse_known_args()
-    print("unknown arguments:"+str(unk))
+    print("unknown arguments:"+str([jj for jj in unk if not jj[0]=='#']))
 
     if args.max_mem is not None and args.max_mem > 0:
         set_memory_limit(int(args.max_mem*1024*1024*1024))
@@ -730,7 +780,17 @@ def main(argv):
     if args.out_name is None:
         args.out_name=dest_dir + '/E%d_N%d.h5' % (args.xy0[0]/1e3, args.xy0[1]/1e3)
 
-    S, data, sensor_dict = fit_altimetry(args.xy0, Wxy=args.Width, E_RMS=E_RMS, \
+    if args.lagrangian:
+        if args.lagrangian_epoch is None:
+            args.lagrangian_epoch = np.arange(args.time_span[0], args.time_span[1], args.grid_spacing[2])[args.reference_epoch]
+        lagrangian_dict = {field:getattr(args, field) for field in \
+                           ['velocity_files', 'lagrangian_epoch', 'lagrangian_ref_dem',
+                            'lagrangian_dz_spacing', 'lagrangian_dz_E_RMS',
+                            'lagrangian_dz_E_RMS_grad']
+                           }
+
+    S, data, sensor_dict = fit_altimetry(args.xy0, \
+            Wxy=args.Width, E_RMS=E_RMS, \
             t_span=args.time_span, spacing=spacing, \
             reference_epoch=args.reference_epoch, \
             reread_file=args.reread_file,\
@@ -752,10 +812,7 @@ def main(argv):
             firn_correction=args.firn_model,\
             firn_fixed=args.firn_fixed,\
             firn_rescale=args.firn_rescale,\
-            lagrangian=args.lagrangian,\
-            velocity_files=args.velocity_files,\
-            lagrangian_epoch=args.lagrangian_epoch,\
-            lagrangian_ref_dem=args.lagrangian_ref_dem,\
+            lagrangian_dict=lagrangian_dict,\
             mask_file=args.mask_file, \
             DEM_file=args.DEM_file,\
             geoid_file=args.geoid_file,\
