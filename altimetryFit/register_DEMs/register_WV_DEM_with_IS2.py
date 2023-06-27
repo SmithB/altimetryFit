@@ -35,8 +35,8 @@ def make_queue(args):
     with open('register_queue.txt','w') as fh:
         for file in files:
             out_files=out_filenames(file)
-            if os.path.isfile(out_files['h5']):
-                continue
+            #if os.path.isfile(out_files['h5']):
+            #    continue
             fh.write(f'register_WV_DEM_with_IS2.py --DEM_file {file} '+ arg_string + '\n')
     sys.exit(0)
 
@@ -45,12 +45,12 @@ def select_DEM_pts(D_pt, DEM, max_dist, max_dt):
 
     deltas = np.meshgrid(*[np.array([-1, 0, 1]) for ii in [0, 1]])
     for dx, dy in zip(deltas[0].ravel(), deltas[1].ravel()):
-        good[good] &= np.isfinite(DEM.interp(D_pt.x[good]+dx, D_pt.y[good]+dy))
+        good[good] &= np.isfinite(DEM.interp(D_pt.x[good]+dx, D_pt.y[good]+dy, band=0))
     return good
 
 def eval_DEM_shift(delta, D_pt, DEM, sigma_min=0, iterations=1, mask=None):
 
-    dh = D_pt.z - DEM.interp(D_pt.x+delta[0], D_pt.y+delta[1])
+    dh = D_pt.z - DEM.interp(D_pt.x+delta[0], D_pt.y+delta[1], band=0)
 
     if 'DEM_tide' in D_pt.fields:
         dh += D_pt.DEM_tide
@@ -205,6 +205,8 @@ def register_one_DEM(DEM_file=None, GeoIndex_wc=None,
             os.remove(out_file)
 
     DEM=pc.grid.data().from_geotif(DEM_file)
+    #if DEM.z.ndim==3:
+    #    DEM=DEM[:,:,0]
     DEM.z[DEM.z==0]=np.NaN
     DEM.t=pc.grid.DEM_year(DEM.filename)
     XR, YR= [[np.floor(ii[0]/1.e4)*1.e4, np.ceil(ii[1]/1.e4)*1.e4] for ii in DEM.bounds()]
@@ -256,7 +258,7 @@ def register_one_DEM(DEM_file=None, GeoIndex_wc=None,
         shift_list=[0]
     for dx in shift_list:
         for dy in shift_list:
-            mask0 &= np.isfinite(DEM.interp(D_pt.x+dx, D_pt.y+dy))
+            mask0 &= np.isfinite(DEM.interp(D_pt.x+dx, D_pt.y+dy, band=0))
 
     if np.sum(mask0) < 5:
         D_pt.assign({'r':np.zeros_like(D_pt.x)+np.NaN})
