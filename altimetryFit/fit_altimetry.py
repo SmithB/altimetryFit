@@ -164,14 +164,14 @@ def setup_lagrangian(velocity_files=None, lagrangian_epoch=None, reference_epoch
     x = fd_grid([bounds[0]], [spacing['dz']], name='x').ctrs[0]
     y = fd_grid([bounds[1]], [spacing['dz']], name='y').ctrs[0]
 
-    interpolator_save_file=os.path.splitext(velocity_files[0])+'_xy01_grids.h5'
+    interpolator_save_file=os.path.splitext(velocity_files[0])[0] +'_xy01_grids.h5'
     if os.path.isfile(interpolator_save_file):
         xy0_obj=pc.grid.data().from_h5(interpolator_save_file,group='xy0')
         xy1_obj=pc.grid.data().from_h5(interpolator_save_file,group='xy1')
         gridy, gridx, gridt = np.meshgrid(y, x,
                                           (np.array(t_span)-lagrangian_epoch)*SPY, indexing='ij')
         x1=xy1_obj.interp(gridx.ravel(), gridy.ravel(), gridt.ravel(), field='x1')
-        y1=xy1_obj.interp(gridx.ravel(), gridy.ravel(), gridt.ravel(), field='x1')
+        y1=xy1_obj.interp(gridx.ravel(), gridy.ravel(), gridt.ravel(), field='y1')
         bounds_full=[[np.min(x1), np.max(x1)],[np.min(y1), np.max(y1)]]
         out_args.update({'xy1_obj': xy1_obj,
             'xy0_obj': xy0_obj,
@@ -193,7 +193,7 @@ def setup_lagrangian(velocity_files=None, lagrangian_epoch=None, reference_epoch
         velocity_files=[velocity_files]
     if len(velocity_files) == 1:
 
-        if 'NSIDC' in os.path.basename(velocity_files[0]):
+        if 'NSIDC-0731' in os.path.basename(velocity_files[0]):
             with xr.open_dataset(velocity_files[0]) as ds:
                 t_vel=np.array(
                     ds.time.data-np.datetime64('2000-01-01'),
@@ -231,8 +231,8 @@ def setup_lagrangian(velocity_files=None, lagrangian_epoch=None, reference_epoch
     xy1_obj = adv.xy1_interpolator(bounds=bounds,
                                    t_range=(np.array(t_span)-lagrangian_epoch)*SPY,
                                    t_step=0.25*SPY)
-    bounds_full = [[np.nanmin(ii.values), np.nanmax(ii.values)] for ii in
-                           [xy1_dict['x'], xy1_dict['y']]]
+    bounds_full = [[np.nanmin(ii.values), np.nanmax(ii.values)] for ii in\
+                           [xy1_obj.x, xy1_obj.y]]
 
     # create an xy0 interpolator to find final locations for each point
     xy0_obj =adv.xy0_interpolator(bounds=bounds_full,
@@ -463,6 +463,10 @@ def fit_altimetry(xy0, Wxy=4e4, \
 
     W={'x':Wxy, 'y':Wxy,'t':np.diff(t_span)}
     ctr={'x':xy0[0], 'y':xy0[1], 't':np.mean(t_span)}
+
+
+    bds={ dim: c_i+np.array([-0.5, 0.5])*W[dim]  for dim, c_i in ctr.items()}
+
     if out_name is not None:
         try:
             out_name=out_name %(xy0[0]/1000, xy0[1]/1000)
@@ -474,6 +478,9 @@ def fit_altimetry(xy0, Wxy=4e4, \
         compute_E=True
         max_iterations=0
         repeat_res=None
+
+    pad=np.array([-1.e4, 1.e4])
+    mask_data=pc.grid.data().from_h5(mask_file,bounds=[bds['x']+pad, bds['y']+pad])
 
     if lagrangian_dict is not None:
         lagrangian_dict = setup_lagrangian(
@@ -609,7 +616,8 @@ def fit_altimetry(xy0, Wxy=4e4, \
                      data_slope_sensors=DEM_sensors,\
                      E_slope_bias=E_slope_bias,\
                      mask_file=mask_file,\
-                     dzdt_lags=dzdt_lags, \
+                     mask_data=mask_data,\
+                     dzdt_lags=dzdt_lags,\
                      bias_model_args = bias_model_args, \
                      bias_nsigma_edit=bias_nsigma_edit, \
                      bias_nsigma_iteration=bias_nsigma_iteration, \
@@ -773,6 +781,8 @@ def main(argv):
         args.out_name=dest_dir + '/E%d_N%d.h5' % (args.xy0[0]/1e3, args.xy0[1]/1e3)
 
     if args.lagrangian:
+        if args.lagrangian_epoch is None:
+            args.lagrangian_epoch = np.arange(args.time_span[0], args.time_span[1], args.grid_spacing[2])[args.reference_epoch]
         lagrangian_dict = {field:getattr(args, field) for field in \
                            ['velocity_files', 'lagrangian_epoch', 'lagrangian_ref_dem',
                             'lagrangian_dz_spacing', 'lagrangian_dz_E_RMS',
