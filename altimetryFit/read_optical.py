@@ -81,7 +81,9 @@ def read_ATM(xy0, W, gI_files, sensor=3, blockmedian_scale=100.):
 
     D0=[]
     for file in gI_files:
-        D0 += pc.geoIndex().from_file(file).query_xy((px.ravel(), py.ravel()), fields=fields)
+        temp = pc.geoIndex().from_file(file).query_xy((px.ravel(), py.ravel()), fields=fields)
+        if temp is not None:
+            D0 += temp
 
     if D0 is None:
         return D0
@@ -105,11 +107,13 @@ def read_ATM(xy0, W, gI_files, sensor=3, blockmedian_scale=100.):
             D0[ind].blockmedian(blockmedian_scale)
     return D0
 
-def read_LVIS(xy0, W, gI_file, sensor=4, blockmedian_scale=100):
+def read_LVIS(xy0, W, gI_files, sensor=4, blockmedian_scale=100):
     fields={'x','y','z','time','bias_50m', 'noise_50m','slope_x','slope_y'}
-    D0=pc.geoIndex().from_file(gI_file).query_xy_box(xy0[0]+np.array([-W['x']/2, W['x']/2]), xy0[1]+np.array([-W['y']/2, W['y']/2]), fields=fields)
-    if D0 is None:
-        return [None]
+    D0=[]
+    for gI_file in gI_files:
+        temp = pc.geoIndex().from_file(gI_file).query_xy_box(xy0[0]+np.array([-W['x']/2, W['x']/2]), xy0[1]+np.array([-W['y']/2, W['y']/2]), fields=fields)
+        if temp is not None:
+            D0 += temp
     for ind, D in enumerate(D0):
         # LVIS data have the wrong sign on their 'bias' field
         D.bias_50m *=-1
@@ -214,7 +218,7 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
             if hemisphere==-1:
                 # remove cycle 1 (overconstrains 2018-2019 based on not enough data)
                 Di.index(Di.time > 2019.0)
-    if 'ICESat' in GI_files:
+    if 'ICESat1' in GI_files:
         D_IS = read_ICESat(xy0, W, find_gI_files(GI_files['ICESat1']),
                            sensor=laser_key()['ICESat1'],
                            hemisphere=hemisphere, DEM=DEM)
