@@ -5,11 +5,24 @@ Created on Mon Jun 19 20:07:43 2023
 
 @author: ben
 """
+import sys
+import re
+import os
+
+threads_re=re.compile("THREADS=(\S+)")
+n_threads="1"
+for arg in sys.argv:
+    try:
+        n_threads=str(threads_re.search(arg).group(1))
+    except Exception:
+        pass
+
+os.environ["MKL_NUM_THREADS"]=n_threads
+os.environ["OPENBLAS_NUM_THREADS"]=n_threads
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pyproj
-import re
 import os
 import geopandas as gpd
 import pyproj
@@ -120,6 +133,12 @@ def est_along_track_jitter(filename, url_list_file=None, expected_rms_grad=1.e-5
         sigma_extra = LS.calc_sigma_extra( D.r0 - b_est, D.sigma, valid_data )
         valid_data = np.abs(D.r0-b_est)  < 3 * np.sqrt( D.sigma**2 + sigma_extra**2 )
 
+    data_count_AT = (Gd_full.T @ valid_data)[0:len(this_grid.ctrs[0])]
+    if np.any(data_count_AT > 100):
+        sigma_bias = np.nanstd(m[:-3][data_count_AT > 100])
+    else:
+        sigma_bias = np.NaN
+
     return  {'R0' : pc.RDE(D.r0[valid_data]),
              'poly' : poly,
              'sigma_uncorr':np.std(D.r0[valid_data]),
@@ -133,6 +152,8 @@ def est_along_track_jitter(filename, url_list_file=None, expected_rms_grad=1.e-5
              'xy_atc' : xy_atc,
              'bias_est' : b_est,
              'N_data': np.sum(valid_data),
+             'data_count_AT' : data_count_AT,
+             'sigma_bias' : sigma_bias,
              'xform' : xform}
 
 def main():
@@ -162,7 +183,9 @@ def main():
                    'bias': 1.e-3,
                    'x_bias': 1.e-3,
                    'tilt_model': 1.e-6,
-                   'N_data': 1.}
+                   'N_data': 1.,
+                   'data_count_AT':0.1,
+                   'sigma_bias':0.01}
     out={}
     for field, precision in out_precision.items():
         temp = np.round(S[field]/precision)*precision
