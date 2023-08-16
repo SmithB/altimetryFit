@@ -476,6 +476,7 @@ def fit_altimetry(xy0, Wxy=4e4, \
             avg_scales=None,\
             bias_params=['time_corr','sensor','spot'],\
             seg_diff_tol=4,\
+            verbose=True,\
             DEM_grid_bias_params=None):
     """
         Wrapper for smooth_xytb_fit_aug that can find data and set the appropriate parameters
@@ -521,15 +522,19 @@ def fit_altimetry(xy0, Wxy=4e4, \
                                    .interp(mask_data.x, mask_data.y, gridded=True) > 0.1)[:,:,None],
                                    [1, 1, mask_data.shape[2]])
         if np.all(mask_data.z==0):
-            print("shelf_only specified, and no shelf in mask, returning")
-            return
-        
+            if verbose:
+                print("shelf_only specified, and no shelf in mask, returning")
+            return None, None, None
+
     if lagrangian_dict is not None:
         lagrangian_dict = setup_lagrangian(
             SRS_proj4=SRS_proj4, xy0=xy0, Wxy=Wxy,
             t_span=t_span, spacing=spacing, reference_epoch=reference_epoch,
             **lagrangian_dict)
-
+        if np.any(~np.isfinite(np.array(lagrangian_dict['bds']))):
+            if verbose:
+                print("fit_altimetry.py: lagrangian advection failed to produce finite bounds, returning")
+            return None, None, None
         if lagrangian_dict['lagrangian_dz_spacing'] is not None:
             lagrangian_dict['move_points'] = False
             spacing['lagrangian_dz']= lagrangian_dict['lagrangian_dz_spacing']
@@ -591,8 +596,8 @@ def fit_altimetry(xy0, Wxy=4e4, \
         if data.size==0:
             if verbose:
                 print("No non-floating data points found, returning")
-                return
-    
+            return None, None, None
+
     laser_sensors=[item for key, item in laser_key().items()]
     DEM_sensors=np.array([key for key in sensor_dict.keys() if key not in laser_sensors ])
     if reference_epoch is None:
@@ -641,6 +646,10 @@ def fit_altimetry(xy0, Wxy=4e4, \
 
     # apply any custom edits
     custom_edits(data)
+    if data.size == 0:
+        if verbose:
+            print("fit_altimetry:No data found, returning")
+        return None, None, None
     assign_sigma_corr(data)
 
     avg_masks=None
@@ -653,7 +662,7 @@ def fit_altimetry(xy0, Wxy=4e4, \
 
     sigma_extra_masks = {'laser': np.in1d(data.sensor, laser_sensors),
                          'DEM': ~np.in1d(data.sensor, laser_sensors)}
-    
+
     # run the fit
     print("="*50)
     #N.B. Using smooth_fit instead of smooth_xytb_fit_aug
@@ -883,10 +892,14 @@ def main(argv):
             avg_scales=args.avg_scales,\
             DEM_grid_bias_params=DEM_bias_params)
 
+    if S is None:
+        return
+
     if args.calc_error_file is None:
-        save_fit_to_file(S, args.out_name, sensor_dict=sensor_dict,\
-                         dzdt_lags=S['dzdt_lags'], \
-                         reference_epoch=args.reference_epoch)
+        if 'm' in S and len(S['m']) > 0:
+            save_fit_to_file(S, args.out_name, sensor_dict=sensor_dict,\
+                             dzdt_lags=S['dzdt_lags'], \
+                             reference_epoch=args.reference_epoch)
     else:
         S['E']['sigma_z0']=interp_ds(S['E']['sigma_z0'], args.error_res_scale[0])
         for field in S['E'].keys():
