@@ -151,7 +151,7 @@ def calc_blockmedians(D_pt, mask, scale=2000):
     def med_spread(D, ind):
         return np.nanmedian(D.r[ind]), pc.RDE(D.r[ind])
     if np.sum(mask)>0:
-        D_BM=pc.apply_bin_fn(D_pt[mask], 2000, fn=med_spread, fields=['r_median','r_spread'])
+        D_BM=pc.apply_bin_fn(D_pt[mask], scale, fn=med_spread, fields=['r_median','r_spread'])
         return D_BM
     else:
         return None
@@ -182,7 +182,8 @@ def write_output(D_out, D_BM, filename, D_pt=None, DEBUG=False):
 
 def register_one_DEM(DEM_file=None, GeoIndex_wc=None,
                      mask_file=None, max_dist=20,
-                     sigma_min=0.1, sigma_max=5, save_data=True,
+                     sigma_min=0.1, sigma_max=5, 
+                     save_data=True, min_data_points=50,
                      DEBUG=False, verbose=False):
     D_out={'x':np.NaN,
            'y':np.NaN,
@@ -279,7 +280,7 @@ def register_one_DEM(DEM_file=None, GeoIndex_wc=None,
     dh0=dh0[mask0]
     D_pt.assign({'r':r0})
 
-    if np.sum(mask0) < 55:
+    if np.sum(mask0) < min_data_points:
         print('register_WV_DEM_with_IS2.py: not enough valid points found for ' + DEM.filename)
         write_output(D_out, None, DEM.filename, D_pt=D_pt, DEBUG=DEBUG)
         return
