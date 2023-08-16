@@ -38,7 +38,9 @@ def read_ICESat(xy0, W, gI_files, sensor=1, hemisphere=-1, DEM=None):
     D0=[]
     box=[xy0[0]+np.array([-W['x']/2, W['x']/2]), xy0[1]+np.array([-W['y']/2, W['y']/2])]
     for file in gI_files:
-        D0 += pc.geoIndex().from_file(file).query_xy_box(*box, fields=fields)
+        temp = pc.geoIndex().from_file(file).query_xy_box(*box, fields=fields)
+        if temp is not None:
+            D0 += temp
     if D0 is None:
         return None
     for D in D0:
@@ -61,8 +63,9 @@ def read_ICESat(xy0, W, gI_files, sensor=1, hemisphere=-1, DEM=None):
         else:
             slope_mag=np.abs(np.diff(D.z)/(7000*np.diff(D.time*24*3600*365.25)))
         # note: changed sigma to 0.06 as a test, 1/20/2022
-        D.assign({'sigma':np.zeros_like(D.x)+0.06, \
-                  'sigma_corr':np.zeros_like(D.x)+0.05,\
+        # note: changed sigma to 0.25, sigma_corr to 0.2 to handle extrapolated errors, 8/15/2023.
+        D.assign({'sigma':np.zeros_like(D.x) + 0.25, \
+                  'sigma_corr':np.zeros_like(D.x) + 0.2,\
                   'sensor':np.zeros_like(D.x)+sensor, \
                   'slope_mag':slope_mag})
     return D0
@@ -199,7 +202,8 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
     if DEM_file is not None:
         DEM=pc.grid.data().from_geotif(DEM_file, \
                                        bounds=[ii+np.array([-1.1, 1.1])*W['x'] for ii in xy0])
-        DEM.calc_gradient()
+        if 'z' in DEM.fields:
+            DEM.calc_gradient()
     if bm_scale is None:
         bm_scale={'laser':100, 'DEM':200}
 
@@ -213,6 +217,8 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
                     N_target=N_target['laser'],
                     seg_diff_tol=seg_diff_tol)
         for Di in D:
+            if not hasattr(Di,'x'):
+                continue
             Di.assign({'slope_mag':np.sqrt(DEM.interp(Di.x, Di.y, field='z_x')**2+
                                            DEM.interp(Di.x, Di.y, field='z_y')**2)})
             if hemisphere==-1:
