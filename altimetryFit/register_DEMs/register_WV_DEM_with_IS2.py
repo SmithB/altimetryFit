@@ -10,6 +10,20 @@ import json
 import sys
 
 def out_filenames(file):
+    '''
+    Generate the output filenames for a given DEM filename
+
+    Parameters
+    ----------
+    file : str
+        input filename.
+
+    Returns
+    -------
+    out_files : dict
+        dictionary specifying output filenames.
+
+    '''
     out_files={}
     if '_dem_filt' in file:
         out_files['h5']=file.replace('_dem_filt.tif','_shift_est.h5')
@@ -18,7 +32,22 @@ def out_filenames(file):
     out_files['json'] = out_files['h5'].replace('.h5','.json')
     return out_files
 
-def make_queue(args):
+def make_queue(args, replace=True):
+    '''
+    Make a queue of commands for a set of files.
+
+    Parameters
+    ----------
+    args : dict
+        Input arguments.  The queue_wc argument specifies how files will be found.
+    replace : TYPE, bool
+        If True, existing files will be replaced. The default is True.
+
+    Returns
+    -------
+    None.
+
+    '''
     files=glob.glob(args.queue_wc)
     arg_list=sys.argv.copy()
     queue_arg = arg_list.index('--queue_wc')
@@ -35,20 +64,74 @@ def make_queue(args):
     with open('register_queue.txt','w') as fh:
         for file in files:
             out_files=out_filenames(file)
-            #if os.path.isfile(out_files['h5']):
-            #    continue
+            if not replace and os.path.isfile(out_files['h5']):
+                continue
             fh.write(f'register_WV_DEM_with_IS2.py --DEM_file {file} '+ arg_string + '\n')
     sys.exit(0)
 
 def select_DEM_pts(D_pt, DEM, max_dist, max_dt):
+    '''
+    Choose the DEM points that will be present for any allowable shift
+
+    Parameters
+    ----------
+    D_pt : pointCollection.data
+        Point altimetry data to which the DEM is registered.
+    DEM : pointCollection.grid.data
+        DEM data to be registered.
+    max_dist : float
+        maximum distance that the DEM might be displaced.
+    max_dt : TYPE
+        maximum allowed time between a data point and the DEM
+
+    Returns
+    -------
+    good : np.array (boolean)
+        Points that should be used.
+
+    '''
     good = np.abs(D_pt.t - DEM.t) < max_dt
 
-    deltas = np.meshgrid(*[np.array([-1, 0, 1]) for ii in [0, 1]])
+    deltas = np.meshgrid(*[np.array([-1, 0, 1])*max_dist for ii in [0, 1]])
     for dx, dy in zip(deltas[0].ravel(), deltas[1].ravel()):
         good[good] &= np.isfinite(DEM.interp(D_pt.x[good]+dx, D_pt.y[good]+dy, band=0))
     return good
 
 def eval_DEM_shift(delta, D_pt, DEM, sigma_min=0, iterations=1, mask=None):
+    '''
+    Calculate the misfit for a shift value
+
+    Parameters
+    ----------
+    delta : iterable (2)
+        Shift in x, y.
+    D_pt : pointCollection.data
+        Reference point data.
+    DEM : pointCollection.grid.data
+        DEM data.
+    sigma_min : float, optional
+        Minimum value for data errors. The default is 0.
+    iterations : int, optional
+        Number of iterations used to discard outliers. The default is 1.
+    mask : numpy.array, optional
+        Boolean array indicating which values in D_pt to use. The default is None.
+
+    Returns
+    -------
+    sigma : float
+        standard deviation of residuals.
+    sigma_scaled : float
+        standard deviation of error-scaled residuals.
+    mask : numpy.array
+        Boolean array indicating which values in D_pt were used.
+    m : numpy.array
+        Vector indicating mean vertical shift, x-gradient of shift, y_gradient of shift, rate of shift change
+    r : numpy.array
+        Residuals to best-fitting model.
+    dh : numpy.array
+        Differences between point data and DEM.
+
+    '''
 
     dh = D_pt.z - DEM.interp(D_pt.x+delta[0], D_pt.y+delta[1], band=0)
 
@@ -89,6 +172,32 @@ def eval_DEM_shift(delta, D_pt, DEM, sigma_min=0, iterations=1, mask=None):
     return sigma, sigma_scaled, mask, m, r, dh
 
 def edit_by_day(mask, D_pt, DEM, r0, dh_max=5, sigma_min=0.1):
+    '''
+    Eliminate outliers from each day of point data
+
+    Parameters
+    ----------
+    mask : numpy.array
+        Boolean array specifying which points to use
+    D_pt : pointCollection.data
+         Reference point data.
+    DEM : pointCollection.grid.data
+         DEM data.
+    r0 : numpy.array
+        point-vs-DEM differences.
+    dh_max : float, optional
+        points with point-vs-DEM differences greater than this will be edited. The default is 5.
+    sigma_min : float, optional
+        Minimum value for estimated data errors. The default is 0.1.
+
+    Returns
+    -------
+    mask : numpy.array
+        Boolean array indicating which values to use.
+    r0 : numpy.array
+        residuals to best-fitting models
+
+    '''
     # Evaluate the median per-day bias, reject any with absolute values gt 0.5
     day=(D_pt.t*365.25).astype(int)
     DB=np.c_[[(uD, np.nanmedian(r0[mask & (day==uD)])) for uD in np.unique(day)]]
@@ -107,6 +216,30 @@ def edit_by_day(mask, D_pt, DEM, r0, dh_max=5, sigma_min=0.1):
     return mask, r0
 
 def search_offsets(D_pt, DEM, max_delta=10, delta_tol = 1, sigma_min=0.02):
+    '''
+    Search offsets to find the optimum residual
+
+    Parameters
+    ----------
+    D_pt : pointCollection.data
+        Reference point data.
+    DEM : pointCollection.grid.data
+        DEM data.
+    max_delta : float, optional
+        largest offset attempted. The default is 10.
+    delta_tol : float, optional
+        Convergence tolerance for offset search. The default is 1.
+    sigma_min : float, optional
+        Minimum value for estimated data errors. The default is 0.1.
+
+    Returns
+    -------
+    best_offset : list (2)
+        x and y shift for minimum residual.
+    R_of_delta : dict
+        Dict specifying the residual for all tested offsets.
+
+    '''
 
     R_of_delta={}
     delta=max_delta/2
@@ -147,6 +280,24 @@ def search_offsets(D_pt, DEM, max_delta=10, delta_tol = 1, sigma_min=0.02):
     return best_offset, R_of_delta
 
 def calc_blockmedians(D_pt, mask, scale=2000):
+    '''
+    Calculate a blockmedian subset of the data
+
+    Parameters
+    ----------
+    D_pt : pointCollection.data
+         Reference point data.
+    mask : numpy.array
+        Boolean array specifying which points to use
+    scale : float, optional
+        Bin size of the blockmedian. The default is 2000.
+
+    Returns
+    -------
+    D_BM
+        pointCollection.data containing the median subset
+
+    '''
 
     def med_spread(D, ind):
         return np.nanmedian(D.r[ind]), pc.RDE(D.r[ind])
@@ -157,6 +308,21 @@ def calc_blockmedians(D_pt, mask, scale=2000):
         return None
 
 def write_json_output( D_out, json_file ):
+    '''
+    Write output to a json file
+
+    Parameters
+    ----------
+    D_out : dict
+        algorithm output.
+    json_file : str
+        File to write.
+
+    Returns
+    -------
+    None.
+
+    '''
 
     D_dict = {field:getattr(D_out, field).astype(float)[0] for field in D_out.fields}
 
@@ -164,6 +330,27 @@ def write_json_output( D_out, json_file ):
         json.dump(D_dict, fh, indent=4)
 
 def write_output(D_out, D_BM, filename, D_pt=None, DEBUG=False):
+    '''
+    save output to an h5 file.
+
+    Parameters
+    ----------
+    D_out : dict
+        algorithm output.
+    D_BM : pointCollection.data
+        blockmedianed data.
+    filename : str
+        output data file.
+    D_pt : pointCollection.data
+         Reference point data.
+    DEBUG : Boolean, optional
+        If true, additional data will be written. The default is False.
+
+    Returns
+    -------
+    None.
+
+    '''
 
     # need every field in D_out to be a non-zero-dimension array
     D_out=pc.data().from_dict({key:np.array(item)[None] for key, item in D_out.items()})
@@ -185,6 +372,56 @@ def register_one_DEM(DEM_file=None, GeoIndex_wc=None,
                      sigma_min=0.1, sigma_max=5, 
                      save_data=True, min_data_points=50,
                      DEBUG=False, verbose=False):
+    '''
+    
+
+    Parameters
+    ----------
+    DEM_file : str, optional
+        File containing DEM data. The default is None.
+    GeoIndex_wc : str, optional
+        String pointing to GeoIndex files. The default is None.
+    mask_file : str, optional
+        Geotif file containing mask for points to use. The default is None.
+    max_dist : float, optional
+        Largest distance to search. The default is 20.
+    sigma_min : float, optional
+        Minimum value for error estimates. The default is 0.1.
+    sigma_max : float, optional
+        Points with errors larger than this will be culled. The default is 5.
+    save_data : Bool, optional
+        If true, write the data to the output file. The default is True.
+    min_data_points : int, optional
+        Fail if fewer than this number of points are present. The default is 50.
+    DEBUG : Bool, optional
+        If true, export additional information. The default is False.
+    verbose : Bool, optional
+        True for verbose output. The default is False.
+
+    Returns
+    -------
+    delta_best : list
+        Shift for optimal residual.
+    m : numpy.array
+        Vector indicating mean vertical shift, x-gradient of shift, y_gradient of shift, rate of shift change
+    D_pt : pointCollection.data
+        Reference point data.
+    DEM : pointCollection.grid.data
+        DEM data.
+    D_out : dict
+        Dictionary containing output data
+    D_BM : pointCollection.data
+        Blockmedian of residuals
+    R_of_delta : dict
+        Dict specifying the residual for all tested offsets.
+    list
+        [Raw sigma, optimal sigma]
+    list
+        [Raw scaled sigma, optimal scaled sigma]
+
+    '''
+    
+    
     D_out={'x':np.NaN,
            'y':np.NaN,
            'N':0,

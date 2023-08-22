@@ -39,6 +39,46 @@ import json
 def setup_jitter_fit(D, filename, url_list_file=None, res=500,
                      expected_rms_grad=1.e-5, expected_rms_bias=2,
                      expected_plane_slope=0.02, expected_plane_bias=5):
+    """
+    Setup equations to fit the jitter variations in a DEM
+
+    Parameters
+    ----------
+    D : pointCollection.data
+        point data against which to compare the DEM.
+    filename : str
+        DEM filename.
+    url_list_file : str, optional
+        File matching PGC urls to DEM filenames. The default is None.
+    res : float, optional
+        Resolution of the jitter estimates. The default is 500.
+    expected_rms_grad : float, optional
+        Expected value for the RMS gradient of the solution. The default is 1.e-5.
+    expected_rms_bias : TYPE, optional
+        Expected value for the RMS of the solution. The default is 2.
+    expected_plane_slope : TYPE, optional
+        Expected slope of the mean tilt of the solution. The default is 0.02.
+    expected_plane_bias : TYPE, optional
+        Expected mean bias of the solution. The default is 5.
+
+    Returns
+    -------
+    Gd : LSsurf.lin_op
+        Matrix mapping bias parameters to each data point.
+    Gc : LSsurf.lin_op
+        Matrix measuring the magnitude of model parameters
+    xform : dict
+        Parameters describing the origin and basis vectors of the transform between along-track and projected coordinates
+    this_grid : LSsurf.fd_grid
+        Grid object for the along-track fit.
+    xy_atc : numpy.array
+        along-track coordinates for the data points.
+    poly : numpy.array
+        Polygon for the DEM, in projected coordinates
+
+    """
+    
+    
     # read the PGC metadata
     meta=get_pgc(os.path.basename(filename), url_list_file, targets=['meta'])['meta']
     gdf=gpd.GeoDataFrame.from_features([meta])
@@ -95,6 +135,21 @@ def setup_jitter_fit(D, filename, url_list_file=None, res=500,
     return Gd, Gc, xform, this_grid, xy_atc, poly
 
 def get_residuals(DEM_file):
+    '''
+    Calculate the residuals between point data and a DEM
+
+    Parameters
+    ----------
+    DEM_file : str
+        The DEM file
+
+    Returns
+    -------
+    D : pointCollection.data
+        point data including DEM differences.
+    '''
+    
+    
     meta_file = DEM_file.replace('_dem_filt.tif','_shift_est.h5')
     print([DEM_file, meta_file])
     try:
@@ -107,10 +162,32 @@ def get_residuals(DEM_file):
 
 
 def med_spread(D, els):
+    # return the median and spread of a subset of a dataset
     return np.nanmedian(D.z[els]), pc.RDE(D.z[els])
 
 def est_along_track_jitter(filename, url_list_file=None, expected_rms_grad=1.e-5, expected_rms_bias=2, res=500):
+    """
+    Estimate the along-track jitter for a DEM
 
+    Parameters
+    ----------
+    filename : str
+        DEM filename.
+    url_list_file : str optional
+        Filename for a file that gives the PGC URL for each DEM. The default is None.
+    expected_rms_grad : float, optional
+        Expected RMS gradient of the along-track jitter. The default is 1.e-5.
+    expected_rms_bias : TYPE, optional
+        Expected RMS magnitude of the along-track jitter. The default is 2.
+    res : TYPE, optional
+        Resolution of the along-track jitter estimates. The default is 500.
+
+    Returns
+    -------
+    dict
+        Dictionary containing jitter parameters.
+
+    """
     D=get_residuals(filename)
     Gd, Gc, xform, this_grid, xy_atc, poly = setup_jitter_fit(D, filename, url_list_file,
                                                               expected_rms_grad = expected_rms_grad,
