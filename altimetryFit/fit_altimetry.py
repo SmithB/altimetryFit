@@ -174,6 +174,8 @@ def setup_lagrangian(velocity_files=None, lagrangian_epoch=None, reference_epoch
                                           (np.array(t_span)-lagrangian_epoch)*SPY, indexing='ij')
         x1=xy1_obj.interp(gridx.ravel(), gridy.ravel(), gridt.ravel(), field='x1')
         y1=xy1_obj.interp(gridx.ravel(), gridy.ravel(), gridt.ravel(), field='y1')
+        x1 = np.append(x1, bounds[0])
+        y1 = np.append(y1, bounds[1])
         bounds_full=[[np.nanmin(x1), np.nanmax(x1)],[np.nanmin(y1), np.nanmax(y1)]]
         out_args.update({'xy1_obj': xy1_obj,
             'xy0_obj': xy0_obj,
@@ -554,7 +556,7 @@ def fit_altimetry(xy0, Wxy=4e4, \
     elif reread_dirs is None:
         if lagrangian_dict is not None and lagrangian_dict['move_points']:
             this_xy0=[*map(np.mean, lagrangian_dict['bds'])]
-            this_W=this_W={'x':np.diff(lagrangian_dict['bds'][0]),
+            this_W={'x':np.diff(lagrangian_dict['bds'][0]),
                            'y':np.diff(lagrangian_dict['bds'][1]),
                            't':W['t']}
         else:
@@ -588,7 +590,12 @@ def fit_altimetry(xy0, Wxy=4e4, \
                 EPSG=3413
             else:
                 EPSG=3031
-            apply_tides(data, xy0, Wxy, tide_mask_file, tide_directory, tide_model, EPSG=EPSG)
+            if lagrangian_dict is not None and lagrangian_dict['move_points']:
+                this_Wxy = np.max([*map(np.diff, data.bounds())])+5000
+                this_xy0 = [*map(np.mean, data.bounds())]
+            else:
+                this_Wxy, this_xy0 = [Wxy, xy0]
+            apply_tides(data, this_xy0, this_Wxy, tide_mask_file, tide_directory, tide_model, EPSG=EPSG)
     else:
         data, sensor_dict = reread_data_from_fits(xy0, Wxy, reread_dirs, template='E%d_N%d.h5')
     if shelf_only and hasattr(data, 'floating'):
