@@ -70,9 +70,12 @@ if "--tile_spacing" in defaults:
 else:
     Hxy=Wxy/2
 #print(Hxy)
-    
-    
-mask_G=pc.grid.data().from_geotif(defaults['--mask_file'].replace('100m','1km'))
+
+if '100m' in defaults['--mask_file']:
+    mask_1km_file=defaults['--mask_file'].replace('100m','1km')
+else:
+    mask_1km_file=defaults['--mask_file'].replace('.h5', '_1km.tif')
+mask_G=pc.grid.data().from_geotif(mask_1km_file)
 mask_G.z=snd.binary_dilation(mask_G.z, structure=np.ones([20, 1], dtype='bool'))
 mask_G.z=snd.binary_dilation(mask_G.z, structure=np.ones([1, 20], dtype='bool'))
 
