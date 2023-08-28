@@ -11,6 +11,7 @@ import os
 import json
 import glob
 import h5py
+import re
 from LSsurf.subset_DEM_stack import subset_DEM_stack
 
 
@@ -94,7 +95,8 @@ def apply_DEM_metadata(D, DEM_meta_config):
 
 def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=20.,
                   blockmedian_scale=100., N_target=None, subset_stack=False, year_offset=0.5,
-                  DEM_meta_config=None, DEM_res=32, DEBUG=False, target_area=None, time_range=None):
+                  DEM_meta_config=None, DEM_res=32, DEBUG=False, target_area=None, time_range=None,
+                  include_xtrack=False):
 
     if sensor_dict is None:
         sensor_dict={}
@@ -120,6 +122,11 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
              (np.max(Di.time) < time_range[0]) or \
                 (np.min(Di.time) > time_range[1])) ]
 
+    if not include_xtrack:
+        print('before removing xtrack:'+str(len(D)))
+        xtrack_re=re.compile('_W(\d)W(\d)_')
+        D = [ Di for Di in D if xtrack_re.search(Di.filename) is None ]
+        print('\t after::'+str(len(D)))
     if target_area is None:
         target_area=W['x']*W['y']
 
