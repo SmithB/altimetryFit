@@ -393,10 +393,14 @@ def save_fit_to_file(S,  filename, sensor_dict=None, dzdt_lags=None, reference_e
                 h5f['/meta/sensors'].attrs['sensor_%d' % key]=sensor_dict[key]
         if 'sensor_bias_grids' in S['m'] and 'grid_bias' not in h5f:
             h5f.create_group('/grid_bias')
+        if 'jitter_bias_grids' in S['m'] and 'jitter_bias' not in h5f:
+            h5f.create_group('/jitter_bias')
     if 'sensor_bias_grids' in S['m']:
         for name, ds in S['m']['sensor_bias_grids'].items():
                 ds.to_h5(filename, group='/grid_bias/'+name)
-
+    if 'jitter_bias_grids' in S['m']:
+        for name, ds in S['m']['jitter_bias_grids'].items():
+                ds.to_h5(filename, group='/jitter_bias/'+name)
     for key , ds in S['m'].items():
         if isinstance(ds, pc.grid.data):
                 ds.to_h5(filename, group=key)
@@ -479,6 +483,8 @@ def fit_altimetry(xy0, Wxy=4e4, \
             bias_params=['time_corr','sensor','spot'],\
             seg_diff_tol=4,\
             verbose=True,\
+            reference_DEM_file = None,\
+            reference_DEM_uncertainty = None,\
             DEM_grid_bias_params=None):
     """
         Wrapper for smooth_xytb_fit_aug that can find data and set the appropriate parameters
@@ -513,7 +519,7 @@ def fit_altimetry(xy0, Wxy=4e4, \
         repeat_res=None
 
     pad=np.array([-1.e4, 1.e4])
-    mask_data=pc.grid.data().from_h5(mask_file,bounds=[bds['x']+pad, bds['y']+pad])
+    mask_data=pc.grid.data().from_file(mask_file,bounds=[bds['x']+pad, bds['y']+pad])
     if shelf_only:
         # mask out anything that's not shelf
         if mask_data.z.ndim==2:
@@ -646,10 +652,12 @@ def fit_altimetry(xy0, Wxy=4e4, \
         for sensor in DEM_sensors:
             sensor_grid_bias_params += [{'sensor':sensor, 'expected_val':0}]
             sensor_grid_bias_params[-1].update(DEM_grid_bias_params)
-
-    if isinstance(data,pc.data):
-        temp=pc.data().from_dict({item:data.__dict__[item] for item in data.fields})
-        data=temp
+            sensor_grid_bias_params[-1].update({'filename':sensor_dict[sensor]})
+    # not sure why this was ever needed.  Commenting until there's a reason for not doing so
+    #if isinstance(data,pc.data):
+    #    temp=pc.data().from_dict({item:data.__dict__[item] for item in data.fields})
+    #    data=temp
+    #    temp=None
 
     # apply any custom edits
     custom_edits(data)
@@ -670,6 +678,12 @@ def fit_altimetry(xy0, Wxy=4e4, \
     sigma_extra_masks = {'laser': np.in1d(data.sensor, laser_sensors),
                          'DEM': ~np.in1d(data.sensor, laser_sensors)}
 
+    if reference_DEM_file is not None:
+        data.z -= pc.grid.data().from_file(reference_DEM_file,
+                                    bounds=[xy0[0]+np.array([-0.5, 0.5])*Wxy,
+                                            xy0[1]+np.array([-0.5, 0.5])*Wxy])\
+                    .interp(data.x, data.y)
+        E_RMS0['z0'] = reference_DEM_uncertainty
     # run the fit
     print("="*50)
     #N.B. Using smooth_fit instead of smooth_xytb_fit_aug
@@ -730,6 +744,8 @@ def main(argv):
     parser.add_argument('--E_slope_bias', type=float, default=1.e-5)
     parser.add_argument('--data_gap_scale', type=float,  default=2500)
     parser.add_argument('--max_iterations', type=int, default=8)
+    parser.add_argument('--reference_DEM_file', type=str, help='DEM that will be subtracted from data before fitting')
+    parser.add_argument('--reference_DEM_uncertainty', type=float, help='Uncertainty in the reference DEM is correct')
     parser.add_argument('--bias_params', type=str, nargs='+', default=['time_corr','sensor','spot'])
     parser.add_argument('--DEM_grid_bias_params_file', type=path, help='file containing DEM grid bias params')
     parser.add_argument('--bias_nsigma_edit', type=int, default=6, help='edit points whose estimated bias is more than this value times the expected')
@@ -836,7 +852,12 @@ def main(argv):
                     if line[0]=="#":
                         continue
                     key, val = line.rstrip().split('=')
-                    DEM_bias_params[key]=float(val.split('#')[0])
+                    try:
+                        # is val a float?
+                        DEM_bias_params[key]=float(val.split('#')[0])
+                    except ValueError:
+                        # if not, assume str
+                        DEM_bias_params[key]=val.split('#')[0]
                 except Exception:
                     print("problem with DEM_bias_params line\n"+line)
 
@@ -869,6 +890,8 @@ def main(argv):
             bias_nsigma_edit=args.bias_nsigma_edit,
             bias_nsigma_iteration=args.bias_nsigma_iteration,\
             bias_params=args.bias_params,\
+            reference_DEM_file=args.reference_DEM_file,\
+            reference_DEM_uncertainty=args.reference_DEM_uncertainty,\
             hemisphere=args.Hemisphere, reread_dirs=reread_dirs, \
             out_name=args.out_name, \
             GI_files=geoIndex_dict,\
