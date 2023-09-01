@@ -679,6 +679,7 @@ def fit_altimetry(xy0, Wxy=4e4, \
                          'DEM': ~np.in1d(data.sensor, laser_sensors)}
 
     if reference_DEM_file is not None:
+        # N.B.  Reference DEM is subtracted AFTER firn correction
         data.z -= pc.grid.data().from_file(reference_DEM_file,
                                     bounds=[xy0[0]+np.array([-0.5, 0.5])*Wxy,
                                             xy0[1]+np.array([-0.5, 0.5])*Wxy])\
@@ -787,7 +788,9 @@ def main(argv):
     parser.add_argument('--error_res_scale','-s', type=float, nargs=2, default=[4, 2], help='if the errors are being calculated (see calc_error_file), scale the grid resolution in x and y to be coarser')
     parser.add_argument('--max_mem', type=float, default=15., help='maximum memory the program is allowed to use, in GB.')
     args, unk=parser.parse_known_args()
-    print("unknown arguments:"+str([jj for jj in unk if not jj[0]=='#']))
+    print(unk)
+    if unk:
+        print("unknown arguments:"+str([jj for jj in unk if not jj[0]=='#']))
 
     if args.max_mem is not None and args.max_mem > 0:
         set_memory_limit(int(args.max_mem*1024*1024*1024))
