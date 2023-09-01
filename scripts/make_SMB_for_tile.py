@@ -11,6 +11,7 @@ import numpy as np
 import os
 import glob
 import h5py
+import sys
 
 import scipy.ndimage as snd
 def smooth_corrected(z, w_smooth, set_NaN=True, mask=None, return_mask=False):
@@ -59,20 +60,23 @@ def make_queue(args, defaults_file):
         step='matched'
     else:
         raise(ValueError('Need to specify prelim or matched'))
+    if args.tile_files is None:
+        thedir=os.path.join(args.base_directory, step)
+        files=glob.glob(thedir+'/E*.h5')
+    else:
+        files=args.tile_files
 
-    thedir=os.path.join(args.base_directory, step)
-    files=glob.glob(thedir+'/E*.h5')
     for file in files:
-        thestr=f'add_SMB_to_tile.py {file} @{defaults_file}'
+        thestr=f'make_SMB_for_tile.py {file} @{defaults_file}'
         for key in ['M2H_file', 'rho_water']:
             thestr += f' --{key} {getattr(args, key)}'
         for key in ['prelim', 'matched']:
             if getattr(args, key):
                 thestr += f' --{key}'
-        for key in ['fields, groups']:
+        for key in ['fields', 'groups']:
             temp=' '.join(getattr(args, key))
             thestr += f' --{key} {temp}'
-    print(thestr)
+        print(thestr)
 
 def main():
 
@@ -82,12 +86,13 @@ def main():
     import argparse
     parser=argparse.ArgumentParser(description='Find the best offset for a DEM relative to a set of altimetry data', fromfile_prefix_chars="@")
     parser.add_argument('file', type=str)
-    parser.add_argument("--time", '-t', type=float, nargs=2)
+    parser.add_argument("--time", '-t', type=str)
     parser.add_argument('--reference_epoch', type=int)
     parser.add_argument('--grid_spacing','-g', type=str, help='grid spacing:DEM (meters),dh maps xy (meters),dh_maps time (years): comma-separated, no spaces', default='250.,4000.,1.')
     parser.add_argument('--base_directory','-b', type=path, help='base directory')
     parser.add_argument('--tide_mask_file', type=path)
-    parser.add_argument('--make_queue','-q', type=str, nargs='+')
+    parser.add_argument('--make_queue','-q', action='store_true')
+    parser.add_argument('--tile_files', type=str, nargs='+')
     parser.add_argument('--M2H_file', type=str, required=True)
     parser.add_argument('--rho_water', type=float, default=1)
     parser.add_argument("--DEBUG", action='store_true')
@@ -98,6 +103,17 @@ def main():
     parser.add_argument('--groups', type=str, nargs='+', default=['dz','z0'])
     args, _=parser.parse_known_args()
 
+
+    for arg in sys.argv:
+        if arg[0]=='@':
+            defaults_file=arg[1:]
+
+    args.time=[*map(float, args.time.split(','))]
+    args.grid_spacing=[*map(float, args.grid_spacing.split(','))]
+
+    if args.make_queue:
+        make_queue(args, defaults_file)
+        sys.exit(0)
 
     epoch_ind = int(args.reference_epoch)
     w_smooth=1
@@ -113,11 +129,9 @@ def main():
         z0=pc.grid.data().from_h5(args.file, group='z0')
         bounds=z0.bounds()
         
-
-
-    smbfd=pc.grid.data().from_nc(args.m2h_file, bounds=[np.array(jj)+pad_f for jj in bounds], t_range=[args.t[0]-1, args.t[1]+1])
+    smbfd=pc.grid.data().from_nc(args.M2H_file, bounds=[np.array(jj)+pad_f for jj in bounds], t_range=[args.time[0]-1, args.time[1]+1])
     if not(np.all(np.isfinite(smbfd.SMB_a))):
-        smbfd=pc.grid.data().from_nc(args.m2h_file, bounds=[np.array(jj)+pad_c for jj in bounds], t_range=[args.t[0]-1, args.t[1]+1])
+        smbfd=pc.grid.data().from_nc(args.M2H_file, bounds=[np.array(jj)+pad_c for jj in bounds], t_range=[args.time[0]-1, args.time[1]+1])
         for field in smbfd.fields:
             setattr(smbfd, field, fill_SMB_gaps(getattr(smbfd, field), w_smooth))
 
@@ -133,10 +147,12 @@ def main():
                 temp *= float_scale[:,:,None]
             dz.assign( {field :  temp - temp[:,:,epoch_ind][:,:,None]} )
     if 'z0' in args.groups:
+        t0=np.arange(args.time[0], args.time[-1]+1, args.grid_spacing[2])[epoch_ind]
+
         if z0 is None:
             z0=pc.grid.data().from_h5(args.file, group='z0')
         for field in args.fields:
-            z0.assign({field : smbfd.interp(z0.x, z0.y, np.array(dz.t[epoch_ind]), field=field, gridded=True )})
+            z0.assign({field : smbfd.interp(z0.x, z0.y, np.array(t0), field=field, gridded=True )})
     
     with h5py.File(args.file,'r+') as h5f:
         for field in args.fields:
@@ -153,3 +169,5 @@ def main():
                 else:
                     h5f['z0/'+field][...]=getattr(z0, field)
 
+if __name__=='__main__':
+    main()
