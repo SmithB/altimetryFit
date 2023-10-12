@@ -32,6 +32,7 @@ from altimetryFit.reread_data_from_fits import reread_data_from_fits
 import pointCollection as pc
 from pyTMD import compute_tide_corrections
 from SMBcorr import assign_firn_variable
+from altimetryFit import SMB_corr_from_grid
 from altimetryFit.read_optical import read_optical_data, laser_key
 from CS2_fit.read_CS2_data import read_CS2_data
 import pointAdvection
@@ -485,6 +486,7 @@ def fit_altimetry(xy0, Wxy=4e4, \
             replace=False, DOPLOT=False, spring_only=False, \
             firn_fixed=False, firn_rescale=False, \
             firn_correction=None, firn_directory=None, firn_version=None,\
+            firn_grid_file=None,\
             GI_files=None,\
             geoid_file=None,\
             mask_file=None, \
@@ -657,7 +659,13 @@ def fit_altimetry(xy0, Wxy=4e4, \
 
     if (firn_fixed or firn_rescale) and reread_dirs is None and \
         calc_error_file is None and reread_file is None:
-        assign_firn_variable(data, firn_correction, firn_directory, hemisphere,
+        if firn_grid_file is not None:
+            if firn_correction=='MERRA2_hybrid':
+                # defaults work here:
+                SMB_corr_from_grid(data,
+                                   model_file=os.path.join(firn_directory,firn_grid_file))
+        else:
+            assign_firn_variable(data, firn_correction, firn_directory, hemisphere,
                          model_version=firn_version, subset_valid=True)
         if firn_fixed:
             data.z -= data.h_firn
@@ -762,6 +770,7 @@ def main(argv):
     parser.add_argument('--Width','-W',  type=float, help="fit width")
     parser.add_argument('--time_span','-t', type=str, help="time span, first year,last year AD (comma separated, no spaces)")
     parser.add_argument('--reference_epoch', type=int)
+    parser.add_argument('--reference_time', type=float)
     parser.add_argument('--grid_spacing','-g', type=str, help='grid spacing:DEM (meters),dh maps xy (meters),dh_maps time (years): comma-separated, no spaces', default='250.,4000.,1.')
     parser.add_argument('--Hemisphere','-H', type=int, default=1, help='hemisphere: -1=Antarctica, 1=Greenland')
     parser.add_argument('--base_directory','-b', type=path, help='base directory')
@@ -793,6 +802,7 @@ def main(argv):
     parser.add_argument('--firn_directory', type=path, help='directory containing firn model')
     parser.add_argument('--firn_model', type=str, help='firn model name')
     parser.add_argument('--firn_version', type=str, help='firn version')
+    parser.add_argument('--firn_grid_file', type=str, help='gridded firn model file that can be interpolated directly.')
     parser.add_argument('--rerun_file_with_firn', type=str)
     parser.add_argument('--firn_rescale', action='store_true')
     parser.add_argument('--firn_fixed', action='store_true')
@@ -828,11 +838,19 @@ def main(argv):
     if args.max_mem is not None and args.max_mem > 0:
         set_memory_limit(int(args.max_mem*1024*1024*1024))
 
+
     if args.avg_scales is not None:
         args.avg_scales = [int(temp) for temp in args.avg_scales.split(',')]
     args.grid_spacing = [float(temp) for temp in args.grid_spacing.split(',')]
     args.time_span = [float(temp) for temp in args.time_span.split(',')]
     args.dzdt_lags = [int(temp) for temp in args.dzdt_lags.split(',')]
+
+    if args.reference_epoch is None:
+        if args.reference_time is None:
+            raise(ValueError("Need to specify either reference_epoch or reference_time"))
+        args.reference_epoch = np.argmin(np.abs(
+            np.arange(args.time_span[0], args.time_span[1], args.grid_spacing[2])-args.reference_time))
+
 
     spacing={'z0':args.grid_spacing[0], 'dz':args.grid_spacing[1], 'dt':args.grid_spacing[2]}
     E_RMS={'d2z0_dx2':args.E_d2z0dx2, 'd3z_dx2dt':args.E_d3zdx2dt, 'd2z_dxdt':args.E_d3zdx2dt*args.data_gap_scale,  'd2z_dt2':args.E_d2zdt2}
@@ -938,6 +956,7 @@ def main(argv):
             firn_directory=args.firn_directory,\
             firn_version=args.firn_version,\
             firn_correction=args.firn_model,\
+            firn_grid_file=args.firn_grid_file,\
             firn_fixed=args.firn_fixed,\
             firn_rescale=args.firn_rescale,\
             lagrangian_dict=lagrangian_dict,\
