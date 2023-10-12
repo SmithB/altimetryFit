@@ -8,3 +8,4 @@ from .read_ICESat2 import *
 from  . import register_DEMs
 from .get_pgc import get_pgc
 from .est_DEM_jitter_AT import *
+from .SMB_corr_from_grid import SMB_corr_from_grid
