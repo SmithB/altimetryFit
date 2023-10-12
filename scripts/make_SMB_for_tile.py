@@ -16,7 +16,7 @@ import sys
 import scipy.ndimage as snd
 def smooth_corrected(z, w_smooth, set_NaN=True, mask=None, return_mask=False):
     if mask is None:
-        mask=np.isfinite(z)    
+        mask=np.isfinite(z)
     mask1=snd.gaussian_filter(np.float64(mask), w_smooth, mode="constant", cval=0)
     ztemp=np.nan_to_num(z)
     ztemp[mask==0]=0.0
@@ -40,7 +40,7 @@ def fill_gaps(z, w_smooth, mask=None, set_NaN=True, return_mask=False):
         missing=~np.isfinite(z)
         z[missing]=zs[missing]
         return z
-    
+
 def fill_SMB_gaps(z, w_smooth):
     if z.ndim==3:
         for ii in range(z.shape[2]):
@@ -53,7 +53,7 @@ def fill_SMB_gaps(z, w_smooth):
 
 
 def make_queue(args, defaults_file):
-    
+
     if args.prelim:
         step='prelim'
     elif args.matched:
@@ -67,7 +67,7 @@ def make_queue(args, defaults_file):
         files=args.tile_files
 
     for file in files:
-        thestr=f'make_SMB_for_tile.py {file} @{defaults_file}'
+        thestr=f'make_SMB_for_tile.py {file} @{defaults_file} --time {args.time}'
         for key in ['M2H_file', 'rho_water']:
             thestr += f' --{key} {getattr(args, key)}'
         for key in ['prelim', 'matched']:
@@ -82,7 +82,7 @@ def main():
 
     def path(p):
         return os.path.abspath(os.path.expanduser(p))
-    
+
     import argparse
     parser=argparse.ArgumentParser(description='Find the best offset for a DEM relative to a set of altimetry data', fromfile_prefix_chars="@")
     parser.add_argument('file', type=str)
@@ -93,7 +93,8 @@ def main():
     parser.add_argument('--tide_mask_file', type=path)
     parser.add_argument('--make_queue','-q', action='store_true')
     parser.add_argument('--tile_files', type=str, nargs='+')
-    parser.add_argument('--M2H_file', type=str, required=True)
+    parser.add_argument('--M2H_file', type=str)
+    parser.add_argument('--RACMO_file', type=str)
     parser.add_argument('--rho_water', type=float, default=1)
     parser.add_argument("--DEBUG", action='store_true')
     parser.add_argument('--prelim', action='store_true')
@@ -108,19 +109,20 @@ def main():
         if arg[0]=='@':
             defaults_file=arg[1:]
 
-    args.time=[*map(float, args.time.split(','))]
-    args.grid_spacing=[*map(float, args.grid_spacing.split(','))]
-
     if args.make_queue:
         make_queue(args, defaults_file)
         sys.exit(0)
+    args.time=[*map(float, args.time.split(','))]
+    args.grid_spacing=[*map(float, args.grid_spacing.split(','))]
+
+
 
     epoch_ind = int(args.reference_epoch)
     w_smooth=1
     pad_mask=np.array([-250, 250])
     pad_f=np.array([-2.6e4, 2.6e4])
     pad_c=pad_f*3
-    
+
     dz, z0 = [None, None]
     if 'dz' in args.groups:
         dz=pc.grid.data().from_h5(args.file, group='dz')
@@ -128,7 +130,7 @@ def main():
     else:
         z0=pc.grid.data().from_h5(args.file, group='z0')
         bounds=z0.bounds()
-        
+
     smbfd=pc.grid.data().from_nc(args.M2H_file, bounds=[np.array(jj)+pad_f for jj in bounds], t_range=[args.time[0]-1, args.time[1]+1])
     if not(np.all(np.isfinite(smbfd.SMB_a))):
         smbfd=pc.grid.data().from_nc(args.M2H_file, bounds=[np.array(jj)+pad_c for jj in bounds], t_range=[args.time[0]-1, args.time[1]+1])
@@ -142,7 +144,7 @@ def main():
         float_scale = (floating==0) + (args.rho_water-.917)/args.rho_water*floating
 
         for field in args.fields:
-            temp=smbfd.interp(dz.x, dz.y, dz.t, field=field, gridded=True) 
+            temp=smbfd.interp(dz.x, dz.y, dz.t, field=field, gridded=True)
             if field == 'SMB_a':
                 temp *= float_scale[:,:,None]
             dz.assign( {field :  temp - temp[:,:,epoch_ind][:,:,None]} )
@@ -153,12 +155,12 @@ def main():
             z0=pc.grid.data().from_h5(args.file, group='z0')
         for field in args.fields:
             z0.assign({field : smbfd.interp(z0.x, z0.y, np.array(t0), field=field, gridded=True )})
-    
+
     with h5py.File(args.file,'r+') as h5f:
         for field in args.fields:
             if 'dz' in args.groups:
                 if field not in h5f['dz']:
-                    h5f.create_dataset('dz/'+field, data=getattr(dz, field),                                                                  
+                    h5f.create_dataset('dz/'+field, data=getattr(dz, field),
                        chunks=True, compression="gzip", fillvalue=dz.fill_value)
                 else:
                     h5f['dz/'+field][...]=getattr(dz, field)
