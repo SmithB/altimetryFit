@@ -67,7 +67,7 @@ def med_spread(D, els):
     # return the median and spread of a subset of a dataset
     return np.nanmedian(D.z[els]), pc.RDE(D.z[els])
 
-def est_along_track_jitter(filename, url_list_file=None, expected_rms_grad=1.e-5, expected_rms_bias=2, res=500):
+def est_along_track_jitter(filename, url_list_file=None, expected_rms_grad=1.e-5, expected_rms_bias=2, res=500, D=None):
     """
     Estimate the along-track jitter for a DEM
 
@@ -81,17 +81,19 @@ def est_along_track_jitter(filename, url_list_file=None, expected_rms_grad=1.e-5
         Expected RMS gradient of the along-track jitter. The default is 1.e-5.
     expected_rms_bias : TYPE, optional
         Expected RMS magnitude of the along-track jitter. The default is 2.
-    res : TYPE, optional
+    res : float, optional
         Resolution of the along-track jitter estimates. The default is 500.
-
+    D : pointCollection.data, optional
+        input registration data
     Returns
     -------
     dict
         Dictionary containing jitter parameters.
 
     """
-    D=get_residuals(filename)
-    Gd, constraint_list, xform, this_grid, xy_atc, poly = LS.setup_DEM_jitter_fit(D, filename, url_list_file,
+    if D is None:
+        D=get_residuals(filename)
+    Gd, constraint_list, xform, this_grid, xy_atc, poly = LS.setup_DEM_jitter_fit(D, filename, url_list_file=url_list_file,
                                                               expected_rms_grad = expected_rms_grad,
                                                               expected_rms_bias = expected_rms_bias)
     Gc = LS.lin_op().vstack(constraint_list)
