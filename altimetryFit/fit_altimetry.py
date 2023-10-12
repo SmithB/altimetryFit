@@ -138,6 +138,30 @@ def mask_data_by_year(data, mask_dir):
         good[these_pts[(temp<0.5) & np.isfinite(temp)]] = 0
     data.index(good)
 
+def update_mask_data_andor(mask_data, and_mask_files, or_mask_files):
+    if and_mask_files is not None:
+        for mask_file in and_mask_files:
+            mask_i = pc.grid.data().from_file(mask_file).interp(mask_data.x, mask_data.y, gridded=True)
+            these=np.isfinite(mask_i)
+            if mask_data.z.ndim==2:
+                mask_data.z[these] = bool(mask_data.z[these]) & (mask_i[these]>0.5)
+            else:
+                for ind in range(mask_data.shape[2]):
+                    temp=mask_data.z[:,:,ind]
+                    temp[these] = temp[these].astype(bool) & (mask_i[these]>0.5)
+                    mask_data.z[:,:,ind]=temp
+    if or_mask_files is not None:
+        for mask_file in or_mask_files:
+            mask_i = pc.grid.data().from_file(mask_file).interp(mask_data.x, mask_data.y, gridded=True)
+            these=np.isfinite(mask_i)
+            if mask_data.z.ndim==2:
+                mask_data.z[these] = mask_data[these].astype(bool) | (mask_i[these] > 0.5)
+            else:
+                for ind in range(mask_data.shape[2]):
+                    temp=mask_data.z[:,:,ind]
+                    temp[these] = temp[these].astype(bool) | (mask_i[these] > 0.5)
+                    mask_data.z[:,:,ind]=temp
+
 def setup_lagrangian(velocity_files=None, lagrangian_epoch=None, reference_epoch=None,
     SRS_proj4=None, xy0=None, Wxy=None, t_span=None, spacing=None, verbose=False,
     **kwargs):
@@ -163,7 +187,7 @@ def setup_lagrangian(velocity_files=None, lagrangian_epoch=None, reference_epoch
     # create arrays of grid coordinates
     x = fd_grid([bounds[0]], [spacing['dz']], name='x').ctrs[0]
     y = fd_grid([bounds[1]], [spacing['dz']], name='y').ctrs[0]
-    if 'xy01_grids.h5' in velocity_files[0]:
+    if 'xy01_grids' in velocity_files[0]:
         interpolator_save_file=velocity_files[0]
     else:
         interpolator_save_file=os.path.splitext(velocity_files[0])[0] +'_xy01_grids.h5'
@@ -323,12 +347,14 @@ def update_data_for_lagrangian(data, lagrangian_ref_dem=None, mask_data=None, **
         domain_mask = (np.abs(data.x-kwargs['xy0'][0]) <= kwargs['Wxy']/2) & \
             (np.abs(data.y-kwargs['xy0'][1]) <= kwargs['Wxy']/2)
         data.index(domain_mask)
-        if 'lagrangian_mask_files' in kwargs:
+        if 'lagrangian_mask_files' in kwargs and kwargs['lagrangian_mask_files'] is not None:
             apply_lagrangian_masks(data, data.x, data.y, mask_files=kwargs['lagrangian_mask_files'], **kwargs)
     else:
         # save additional x_original and y_original points
         data.assign(x_lag=np.copy(x0), y_lag=np.copy(y0))
-        if 'lagrangian_mask_files' in kwargs:
+        # remove data for which the advection returned NaN
+        data.index(np.isfinite(x0+y0))
+        if 'lagrangian_mask_files' in kwargs and kwargs['lagrangian_mask_files'] is not None:
             apply_lagrangian_masks(data, data.x_lag, data.y_lag, mask_files=kwargs['lagrangian_mask_files'], **kwargs)
     out_args=kwargs
     return out_args
@@ -462,6 +488,8 @@ def fit_altimetry(xy0, Wxy=4e4, \
             GI_files=None,\
             geoid_file=None,\
             mask_file=None, \
+            and_mask_files=None, \
+            or_mask_files=None, \
             DEM_file=None,\
             mask_floating=False,\
             water_mask_threshold=None, \
@@ -533,6 +561,9 @@ def fit_altimetry(xy0, Wxy=4e4, \
             if verbose:
                 print("shelf_only specified, and no shelf in mask, returning")
             return None, None, None
+
+    if and_mask_files is not None or or_mask_files is not None:
+        update_mask_data_andor(mask_data, and_mask_files, or_mask_files)
 
     if lagrangian_dict is not None:
         lagrangian_dict = setup_lagrangian(
@@ -711,7 +742,7 @@ def fit_altimetry(xy0, Wxy=4e4, \
                      lagrangian_coords=lagrangian_coords,\
                      converge_tol_frac_TSE=0.005)
 
-    if lagrangian_dict is not None:
+    if lagrangian_dict is not None and S['data'] is not None and S['data'].size > 0:
         update_output_data_for_lagrangian(S, **lagrangian_dict)
 
     return S, data, sensor_dict
@@ -775,6 +806,8 @@ def main(argv):
     parser.add_argument('--lagrangian_dz_E_RMS_grad', type=float, help='Expected RMS gradient for moving topography')
     parser.add_argument('--shelf_only', action='store_true', help='use only data points originally on the shelf')
     parser.add_argument('--mask_file', type=path)
+    parser.add_argument('--and_mask_files', type=str, nargs='+')
+    parser.add_argument('--or_mask_files', type=str, nargs='+')
     parser.add_argument('--geoid_file', type=path)
     parser.add_argument('--water_mask_threshold', type=float)
     parser.add_argument('--year_mask_dir', type=path)
@@ -788,9 +821,9 @@ def main(argv):
     parser.add_argument('--error_res_scale','-s', type=float, nargs=2, default=[4, 2], help='if the errors are being calculated (see calc_error_file), scale the grid resolution in x and y to be coarser')
     parser.add_argument('--max_mem', type=float, default=15., help='maximum memory the program is allowed to use, in GB.')
     args, unk=parser.parse_known_args()
-    print(unk)
+
     if unk:
-        print("unknown arguments:"+str([jj for jj in unk if not jj[0]=='#']))
+        print("unknown arguments:"+str([jj for jj in unk if (len(jj)>0) and not jj[0]=='#']))
 
     if args.max_mem is not None and args.max_mem > 0:
         set_memory_limit(int(args.max_mem*1024*1024*1024))
@@ -910,6 +943,8 @@ def main(argv):
             lagrangian_dict=lagrangian_dict,\
             shelf_only=args.shelf_only,\
             mask_file=args.mask_file, \
+            and_mask_files=args.and_mask_files,\
+            or_mask_files=args.or_mask_files,\
             DEM_file=args.DEM_file,\
             geoid_file=args.geoid_file,\
             mask_floating=args.mask_floating,\
