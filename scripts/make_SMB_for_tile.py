@@ -66,8 +66,11 @@ def make_queue(args, defaults_file):
     else:
         files=args.tile_files
 
+    if args.M2H_file is None:
+        args.M2H_file=args.firn_directory+'/'+args.firn_grid_file
+
     for file in files:
-        thestr=f'make_SMB_for_tile.py {file} @{defaults_file} --time {args.time}'
+        thestr=f'make_SMB_for_tile.py --file {file} @{defaults_file} --time {args.time}'
         for key in ['M2H_file', 'rho_water']:
             thestr += f' --{key} {getattr(args, key)}'
         for key in ['prelim', 'matched']:
@@ -85,15 +88,18 @@ def main():
 
     import argparse
     parser=argparse.ArgumentParser(description='Find the best offset for a DEM relative to a set of altimetry data', fromfile_prefix_chars="@")
-    parser.add_argument('file', type=str)
+    parser.add_argument('--file', type=str, required=False)
     parser.add_argument("--time", '-t', type=str)
     parser.add_argument('--reference_epoch', type=int)
+    parser.add_argument('--reference_time', type=float)
     parser.add_argument('--grid_spacing','-g', type=str, help='grid spacing:DEM (meters),dh maps xy (meters),dh_maps time (years): comma-separated, no spaces', default='250.,4000.,1.')
     parser.add_argument('--base_directory','-b', type=path, help='base directory')
     parser.add_argument('--tide_mask_file', type=path)
     parser.add_argument('--make_queue','-q', action='store_true')
     parser.add_argument('--tile_files', type=str, nargs='+')
     parser.add_argument('--M2H_file', type=str)
+    parser.add_argument('--firn_directory', type=str)
+    parser.add_argument('--firn_grid_file', type=str)
     parser.add_argument('--RACMO_file', type=str)
     parser.add_argument('--rho_water', type=float, default=1)
     parser.add_argument("--DEBUG", action='store_true')
@@ -102,6 +108,7 @@ def main():
     parser.add_argument("--verbose",'-v', action="store_true")
     parser.add_argument('--fields', type=str, nargs='+', default=['SMB_a','FAC'])
     parser.add_argument('--groups', type=str, nargs='+', default=['dz','z0'])
+    parser.add_argument('--extrapolate_time','-e', action='store_true')
     args, _=parser.parse_known_args()
 
 
@@ -115,9 +122,9 @@ def main():
     args.time=[*map(float, args.time.split(','))]
     args.grid_spacing=[*map(float, args.grid_spacing.split(','))]
 
+    if args.reference_time is None:
+        epoch_ind = int(args.reference_epoch)
 
-
-    epoch_ind = int(args.reference_epoch)
     w_smooth=1
     pad_mask=np.array([-250, 250])
     pad_f=np.array([-2.6e4, 2.6e4])
@@ -142,6 +149,13 @@ def main():
             .interp(dz.x, dz.y, gridded=True)>0.5
         floating[~np.isfinite(floating)]=0
         float_scale = (floating==0) + (args.rho_water-.917)/args.rho_water*floating
+
+        if args.reference_time is not None:
+            epoch_ind = np.argmin(np.abs(dz.t-args.reference_time))
+
+        if args.extrapolate_time:
+            if smbfd.t[-1] < dz.t[-1]:
+                smbfd.t[-1] = dz.t[-1]
 
         for field in args.fields:
             temp=smbfd.interp(dz.x, dz.y, dz.t, field=field, gridded=True)
