@@ -45,7 +45,7 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
     field_dict={None:['delta_time','h_li','h_li_sigma','latitude','longitude','atl06_quality_summary','segment_id','sigma_geo_h'],
                 'fit_statistics':['dh_fit_dx', 'dh_fit_dy', 'n_fit_photons','w_surface_window_final','snr_significance'],
                 'geophysical':['tide_ocean'],
-                'ground_track':['x_atc'],
+                'ground_track':['x_atc','seg_azimuth', 'ref_azimuth','ref_coelv'],
                 'orbit_info':['rgt','cycle_number'],
                 'derived':['valid', 'BP','LR','spot']}
     if tiled:
@@ -63,9 +63,11 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
                        np.arange(bds['y'][0], bds['y'][1], dx))
     D0=[]
     for gI_file in gI_files:
-        D0 += pc.geoIndex().from_file(gI_file).query_xy((px.ravel(), py.ravel()), fields=fields)
-    N_data=np.sum([Di.size for Di in D0])
-    print([N_data, N_data/1.e6])
+        try:
+            D0 += pc.geoIndex().from_file(gI_file).query_xy((px.ravel(), py.ravel()), fields=fields)
+        except TypeError:
+            print(f"read_ICESat-2: no data from {gI_file}")
+
     D0=pc.data().from_list(D0)
     if D0 is None or D0.size==0:
         return [None]
@@ -172,7 +174,8 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
         D1[ind]=D.copy_subset(np.flatnonzero(np.isfinite(D.z)),
                               datasets=['x','y','z','time', 'delta_time',
                                         'sigma','sigma_corr','rgt','cycle',
-                                        'spot', 'sensor', 'BP','LR'])
+                                        'spot', 'sensor', 'BP','LR',
+                                        'ref_coelv','ref_azimuth','seg_azimuth','h_li'])
 
     return [Di for Di in D1 if 'z' in Di.fields and np.any(np.isfinite(Di.z))]
 
