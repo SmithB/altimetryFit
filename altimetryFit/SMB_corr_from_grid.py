@@ -53,7 +53,7 @@ def fill_SMB_gaps(z, w_smooth):
     return z
 
 def SMB_corr_from_grid(data, model_file=None, time=None, var_mapping=None,
-                       w_smooth=1, rho_water=1, rho_ice=0.917, gridded=False):
+                       w_smooth=1, rho_water=1, rho_ice=0.917, gridded=False, out_vars=None):
     """
     Interpolate a gridded SMB model to data points.
 
@@ -89,10 +89,11 @@ def SMB_corr_from_grid(data, model_file=None, time=None, var_mapping=None,
     pad_c=pad_f*3
 
     if time is None:
+        # note: muliplying by one copies arrays
         if hasattr(data,'t'):
-            time=data.t.copy()
+            time=np.atleast_1d(data.t)*1.
         else:
-            time=data.time.copy()
+            time=np.atleast_1d(data.time)*1.
 
     bounds=data.bounds()
     t_range = [np.nanmin(time), np.nanmax(time)]
@@ -117,6 +118,14 @@ def SMB_corr_from_grid(data, model_file=None, time=None, var_mapping=None,
     SMB_data={}
     for field in var_mapping:
         SMB_data[field]=smbfd.interp(data.x, data.y, t=time, field=field, gridded=gridded)
+
+    if out_vars is not None:
+        for var in out_vars:
+            if var=='SMB_a' and hasattr(data, 'floating'):
+                data.assign(SMB_a= SMB_data['SMB_a']*(data.floating==0) + (rho_water-.917)/rho_water*(data.floating==1))
+            else:
+                data.assign({var:SMB_data[var]})
+
 
     if 'floating' in data.fields and np.any(data.floating):
         float_scale = (data.floating==0) + (rho_water-.917)/rho_water*(data.floating==1)
