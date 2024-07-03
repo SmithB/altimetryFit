@@ -63,11 +63,16 @@ def parse_input_args(args):
     parser.add_argument('--facet_tol', '-f', type=float, default=None)
     parser.add_argument('--ref_dem', type=str)
     parser.add_argument('--ref_dem_tol', type=float, default=50)
-    return parser.parse_args()
+    parser.add_argument('--ref_dem_smooth', type=float, default=200)
+    parser.add_argument('--ref_dem_erode', type=float, default=50)
+
+
+    args=parser.parse_args()
+    if args.error_RMS_scale < 0:
+        args.error_RMS_Scale=None
+    return args
 
 def get_pgc_masks(filename, pgc_url_file):
-    import requests
-    import shutil
 
     pgc_re=re.compile('(SETSM_.*_seg\d+)')
     pgc_base=pgc_re.search(filename).group(1)
@@ -75,7 +80,6 @@ def get_pgc_masks(filename, pgc_url_file):
     downscale_re=re.compile('(_(\d+)m).tif')
     m_down = downscale_re.search(filename)
     if m_down is None:
-        resample=False
         resample_str=''
     else:
         resample_str = m_down.group(1)
@@ -87,7 +91,7 @@ def get_pgc_masks(filename, pgc_url_file):
     for extension in ['_matchtag','_bitmask']:
         out_files[extension] = os.path.join(os.path.dirname(filename), pgc_base+extension+resample_str+'.tif')
 
-    if os.path.isfile(out_files['_matchtag']) and os.path.isfile(out_files['_bitmask']):
+    if np.all([os.path.isfile(jj) | os.path.islink(jj) for jj in out_files.values()]):
         return out_files
 
     pgc_url=None
@@ -112,8 +116,8 @@ def get_pgc_masks(filename, pgc_url_file):
         for extension, resamp_alg in zip(['_matchtag','_bitmask'],['min','max']):
             warpoptions=gdal.WarpOptions(format="GTiff", outputBounds=II['cornerCoordinates']['lowerLeft']+II['cornerCoordinates']['upperRight'],
                  creationOptions = ['COMPRESS=LZW'],
-                 resampleAlg='min', 
-                 xRes=np.abs(II['geoTransform'][1]), 
+                 resampleAlg='min',
+                 xRes=np.abs(II['geoTransform'][1]),
                  yRes=np.abs(II['geoTransform'][-1]), srcNodata=255, dstNodata=255)
             gdal.Warp(out_files[extension], pgc_url+extension+'.tif',options=warpoptions)
             #plt.figure()
@@ -134,8 +138,8 @@ def get_ref_dem(ref_dem_filename, in_filename):
     # Do the work
     warpoptions=gdal.WarpOptions(format="GTiff", outputBounds=II['cornerCoordinates']['lowerLeft']+II['cornerCoordinates']['upperRight'],
                  creationOptions = ['COMPRESS=LZW'],
-                 resampleAlg='bilinear', 
-                 xRes=np.abs(II['geoTransform'][1]), 
+                 resampleAlg='bilinear',
+                 xRes=np.abs(II['geoTransform'][1]),
                  yRes=np.abs(II['geoTransform'][-1]))
     gdal.Warp(dst_filename, ref_dem_filename, options=warpoptions)
 
@@ -155,15 +159,58 @@ def mask_pgc( this_bounds, mask, pgc_subs, dec ):
     else:
         mask &= pgc_subs['_bitmask'].z
 
-def mask_by_ref_dem( this_bounds, mask, z, ref_dem_sub, dec, tol=50):
+def mask_by_ref_dem( this_bounds, mask, z, ref_dem_sub, dec, ref_dem_erode=None,
+                    tol=10, max_DEM_offset=20):
     """Use a DEM to update the valid mask."""
+
+    if ref_dem_erode is None:
+        ref_dem_erode=dec
+
     ref_dem_sub.setBounds(*this_bounds, update=True)
-    keep = np.abs( z - ref_dem_sub.z ) < tol
-    if not np.all(keep):
+
+    delta = z - ref_dem_sub.z[0,:,:]
+
+    DEM_offset = np.nanmedian(delta[mask==1])
+    if not np.isfinite(DEM_offset):
+        return
+    DEM_offset = np.maximum(-max_DEM_offset,
+                            np.minimum(max_DEM_offset, DEM_offset))
+
+    keep = np.abs( delta-DEM_offset ) < tol
+    if not np.all(keep[mask==1]):
         keep = snd.binary_erosion(
-                snd.binary_erosion(keep, np.ones((1, dec), dtype=bool), border_value=1),
-                np.ones((dec,1), dtype=bool, border_value=1))
+            snd.binary_erosion(keep.astype(bool),
+               np.ones((1, ref_dem_erode), dtype=bool), border_value=1),
+            np.ones((ref_dem_erode,1), dtype=bool), border_value=1)
         mask &= keep
+
+def mask_by_smoothed_ref_dem( this_bounds, mask, z, ref_dem_sub, dec,
+                             ref_dem_erode=None,
+                             smooth_sigma=20, tol=10, max_DEM_offset=20):
+    """Use a DEM to update the valid mask."""
+
+    if ref_dem_erode is None:
+        ref_dem_erode=dec
+
+    ref_dem_sub.setBounds(*this_bounds, update=True)
+
+    delta = z - ref_dem_sub.z[0,:,:]
+
+    DEM_offset = np.nanmedian(delta[mask==1])
+    if not np.isfinite(DEM_offset):
+        return
+    DEM_offset = np.maximum(-max_DEM_offset,
+                            np.minimum(max_DEM_offset, DEM_offset))
+
+    keep = np.abs( delta-DEM_offset ) < tol
+    if not np.all(keep[mask==1]):
+        keep = snd.binary_erosion(
+            snd.binary_erosion(keep.astype(bool),
+               np.ones((1, ref_dem_erode), dtype=bool), border_value=1),
+            np.ones((ref_dem_erode,1), dtype=bool), border_value=1)
+        mask &= keep
+
+
 
 def filter_dem(*args, **kwargs):
 
@@ -266,11 +313,11 @@ def filter_dem(*args, **kwargs):
             print('\t'+str(e))
             pgc_subs = None
     # use the reference DEM if the PGC subs failed
-    if args.ref_dem is not None and pgc_subs is None:
+    if args.ref_dem is not None:# and pgc_subs is None:
         print("Using DEM for masking")
         ref_dem_file = get_ref_dem( args.ref_dem, args.input_file )
         ref_dem_ds = gdal.Open(ref_dem_file, gdalconst.GA_ReadOnly)
-        ref_dem_sub = im_subset(0, 0, nX, nY, in_ds, pad_val=0, Bands=[1])
+        ref_dem_sub = im_subset(0, 0, nX, nY, ref_dem_ds, pad_val=0, Bands=[1])
     last_time=time.time()
 
     for sub_count, out_sub in enumerate(im_subset(0, 0,  nX_out,  nY_out, outDs, pad_val=0, Bands=out_bands, stride=stride, pad=pad)):
@@ -282,7 +329,7 @@ def filter_dem(*args, **kwargs):
         #ds=None
         #band=None
         z=in_sub.z[0,:,:]
-        mask=np.ones_like(in_sub.z[0,:,:])
+        mask=np.ones_like(in_sub.z[0,:,:], dtype=bool)
         mask[np.isnan(in_sub.z[0,:,:])]=0
         mask[in_sub.z[0,:,:]==noData]=0
 
@@ -290,7 +337,10 @@ def filter_dem(*args, **kwargs):
             mask_pgc( this_bounds, mask, pgc_subs, dec)
 
         if ref_dem_sub is not None:
-            mask_by_ref_dem(this_bounds, mask, z, ref_dem_sub, dec, tol=args.ref_dem_tol)
+            mask_by_ref_dem(this_bounds, mask, z, ref_dem_sub, dec,
+                            ref_dem_erode = int(np.ceil(args.ref_dem_erode/dx)),
+                            smooth_sigma=args.ref_dem_smooth/dx,
+                            tol=args.ref_dem_tol)
 
         out_temp=np.zeros([len(out_bands), stride, stride])
 
@@ -350,7 +400,7 @@ def filter_dem(*args, **kwargs):
             mask=mask[int(dec/2.+0.5)::dec, int(dec/2.+0.5)::dec]
             z[mask==0]=0
 
-        if args.geolocation_error is not None:
+        if args.geolocation_error is not None and args.geolocation_error > 0:
             gx, gy=np.gradient(zs, dec*dx, dec*dx)
             mask1=snd.binary_erosion(mask, np.ones((3,3)))
             gxs, mask_x=smooth_corrected(gx, mask1, 4)
