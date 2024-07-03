@@ -371,7 +371,7 @@ def register_one_DEM(DEM_file=None, GeoIndex_wc=None,
                      mask_file=None, max_dist=20,
                      sigma_min=0.1, sigma_max=5, 
                      save_data=True, min_data_points=50,
-                     DEBUG=False, verbose=False):
+                     DEBUG=False, verbose=False, return_data_only=False):
     '''
     
 
@@ -505,7 +505,6 @@ def register_one_DEM(DEM_file=None, GeoIndex_wc=None,
         return
 
     print(f'\tregister one DEM: after initial editing, found {np.sum(mask0)}')
-
     if DEBUG:
         D_pt.to_h5(out_filenames(DEM.filename)['h5'], group='input_data')
 
@@ -515,8 +514,12 @@ def register_one_DEM(DEM_file=None, GeoIndex_wc=None,
     D_pt=D_pt[mask0]
     r0=r0[mask0]
     dh0=dh0[mask0]
+
     D_pt.assign({'r':r0})
 
+    if return_data_only:
+        return  D_pt, DEM
+ 
     if np.sum(mask0) < min_data_points:
         print('register_WV_DEM_with_IS2.py: not enough valid points found for ' + DEM.filename)
         write_output(D_out, None, DEM.filename, D_pt=D_pt, DEBUG=DEBUG)
