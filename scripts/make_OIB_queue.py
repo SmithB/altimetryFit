@@ -50,7 +50,7 @@ if args.region_file is not None:
     with open(args.region_file,'r') as fh:
         for line in fh:
             m = line_re.search(line)
-            temp[m.group(1)]=[np.float(m.group(2)), np.float(m.group(3))]
+            temp[m.group(1)]=[float(m.group(2)), float(m.group(3))]
     XR=temp['XR']
     YR=temp['YR']
 
