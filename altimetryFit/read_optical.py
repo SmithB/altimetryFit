@@ -12,7 +12,7 @@ from altimetryFit.read_ICESat2 import read_ICESat2
 from LSsurf.matlab_to_year import matlab_to_year
 from altimetryFit.read_DEM_data import read_DEM_data
 import pointCollection as pc
-
+from ATL11.calc_geoloc_bias import calc_geoloc_bias
 
 import glob
 
@@ -148,7 +148,10 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
               mask_file=None, DEM_file=None, \
               geoid_file=None, water_mask_threshold=None,
               mask_floating=False, time_range=None,
-              dem_subset_TF=False, seg_diff_tol=4):
+              dem_subset_TF=False, seg_diff_tol=4,
+              DEM_dt_min=None,
+              DEM_sigma_corr=20,
+              xy_bias_file=None):
     """
     Read laser-altimetry and DEM data from geoIndex files.
 
@@ -164,6 +167,8 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
         dictionary giving the location of geoindex files for each data type. The default is None.
     bm_scale : dict, optional
         dictionary giving the scale of the blockmedian to apply for laser and DEM data. The default is None.
+    DEM_sigma_corr : float, optional
+        tolerance on the constraint on the DEM bias.  The default is 20.
     N_target : dict, optional
         dictionary giving the maximum number of data from lasers and DEMs. The default is None.
     target_area : float, optional
@@ -184,6 +189,8 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
         time range within which are accepted.  The default is None
     dem_subset_TF : bool, optional
         If true, DEM data are subsetted to provide one value per year. The default is False.
+    xy_bias_file: str, optional
+        file from which to read xy biases for ICESat-2 data.
 
     Returns
     -------
@@ -195,6 +202,7 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
         Dictionary giving information about each DEM data file.
 
     """
+    atc_shift_table=None
     laser_dict=laser_key()
     sensor_dict={laser_dict[key]:key for key in ['ICESat1', 'ICESat2', 'ATM','LVIS','riegl']}
     D=[]
@@ -216,14 +224,31 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
                     blockmedian_scale=bm_scale['laser'],
                     N_target=N_target['laser'],
                     seg_diff_tol=seg_diff_tol)
+
         for Di in D:
             if not hasattr(Di,'x'):
                 continue
             Di.assign({'slope_mag':np.sqrt(DEM.interp(Di.x, Di.y, field='z_x')**2+
                                            DEM.interp(Di.x, Di.y, field='z_y')**2)})
-            if hemisphere==-1:
+
+            if xy_bias_file is not None:
+                if hemisphere==1:
+                    EPSG=3413
+                else:
+                    EPSG=3031
+                atc_shift_table = calc_geoloc_bias(Di,
+                                        atc_shift_csv_file=xy_bias_file,
+                                        atc_shift_table=atc_shift_table,
+                                        EPSG=EPSG, move_points=True)
+                Di.z += Di.dh_geoloc
+                # cleanup additional fields:
+                for field in ['h_li','seg_azimuth','ref_azimuth','ref_coelv']:
+                    Di.fields.remove(field)
+
+            #if hemisphere==-1:
                 # remove cycle 1 (overconstrains 2018-2019 based on not enough data)
-                Di.index(Di.time > 2019.0)
+                #Di.index(Di.time > 2019.0)
+
     if 'ICESat1' in GI_files:
         D_IS = read_ICESat(xy0, W, find_gI_files(GI_files['ICESat1']),
                            sensor=laser_key()['ICESat1'],
@@ -254,9 +279,13 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
                             time_range=time_range,
                             target_area=target_area,
                             N_target=N_target['DEM'],
+                            DEM_dt_min=DEM_dt_min,
+                            sigma_corr=DEM_sigma_corr,
                             subset_stack=dem_subset_TF, year_offset=year_offset)
         if D_DEM is not None:
             D += D_DEM
+    if len(D)==0:
+        return None, None, None
 
     # two masking steps:
     # delete data over rock and ocean
