@@ -3,7 +3,7 @@ import numpy as np
 #from altimetryFit import check_obj_memory
 
 
-class im_subset:    
+class im_subset:
     def __init__(self, c0, r0, Nc, Nr, source, pad_val=0, Bands=(1,2,3), stride=None, pad=None, no_edges=False):
         self.source=source
         self.c0=c0
@@ -14,7 +14,7 @@ class im_subset:
         if hasattr(self.source, 'level'): # if the level is zero, this is a copy of a file, if it's >0, it's a copy of a copy of a file
             self.level=self.source.level+1
         else:
-            self.level=0          
+            self.level=0
         self.Bands=Bands
         self.pad_val=pad_val
         if stride is not None:
@@ -37,25 +37,25 @@ class im_subset:
             self.count=0
 
     def __getitem__(self, index):
-        self.setBounds( self.xy0[index,0]-self.pad[0], self.xy0[index,1]-self.pad[1], 
-                              self.stride[0]+2*self.pad[0], self.stride[1]+2*self.pad[1]) 
+        self.setBounds( self.xy0[index,0]-self.pad[0], self.xy0[index,1]-self.pad[1],
+                              self.stride[0]+2*self.pad[0], self.stride[1]+2*self.pad[1])
         self.copySubsetFrom()
         return self
 
 #    def __iter__(self):
 #        return self
-#    
+#
 #    def __next__(self):
 #        if self.count < self.xy0.shape[0]:
-#            self.setBounds( self.xy0[self.count,0]-self.pad[0], self.xy0[self.count,1]-self.pad[1], 
-#                              self.stride[0]+2*self.pad[0], self.stride[1]+2*self.pad[1]) 
+#            self.setBounds( self.xy0[self.count,0]-self.pad[0], self.xy0[self.count,1]-self.pad[1],
+#                              self.stride[0]+2*self.pad[0], self.stride[1]+2*self.pad[1])
 #            self.count=self.count+1
 #            self.copySubsetFrom()
 #            return self
 #        else:
 #            raise StopIteration
 #    def __next__(self):
-      
+
     def setBounds(self, c0, r0, Nc, Nr, update=0):
         self.c0=int(c0)
         self.r0=int(r0)
@@ -68,6 +68,7 @@ class im_subset:
         datatype_dict={
                 'Byte':np.ubyte, \
                 'Float32':np.float32, 'Float64':np.float64,\
+                'Int16':np.int16,\
                 'Int32':np.int32,'Uint32':np.uint32,\
                 'Int64':np.int32,'Uint64':np.uint64}
         if hasattr(self.source, 'level'):  # copy data from another subset
@@ -81,7 +82,7 @@ class im_subset:
             band=self.source.GetRasterBand(int(self.Bands[0]))
             src_NB=self.source.RasterCount
             dt=datatype_dict[gdal.GetDataTypeName(band.DataType)]
-            try: 
+            try:
                 assert(
                     (self.z.dtype==dt) &
                     np.all(self.z.shape==np.array([src_NB, self.Nr, self.Nc])))
@@ -95,7 +96,7 @@ class im_subset:
                 self.z[:, dr0:dr1, dc0:dc1]=a
             self.level=0
 
-        
+
     def writeSubsetTo(self, bands, target):
         if hasattr(target, 'level') and target.level > 0:
             print("copying into target raster")
@@ -117,7 +118,7 @@ class im_subset:
                 try:
                     for bb in (bands):
                         band=target.source.GetRasterBand(int(bb))
-                        band.WriteArray( self.z[bb-1, dr0:dr1, dc0:dc1], int(sc0), int(sr0))   
+                        band.WriteArray( self.z[bb-1, dr0:dr1, dc0:dc1], int(sc0), int(sr0))
                 except TypeError:
                      band=target.source.GetRasterBand(int(bands))
                      band.WriteArray( self.z[int(bands-1), dr0:dr1, dc0:dc1], int(sc0), int(sr0))
@@ -132,26 +133,24 @@ class im_subset:
         if no_edges:
             x0=np.arange(pad, self.Nc-pad, stride[0])
             y0=np.arange(pad, self.Nr-pad, stride[1])
-        else:   
+        else:
             x0=np.arange(0, self.Nc, stride[0])
             y0=np.arange(0, self.Nr, stride[1])
         for x0i in x0:
             for y0i in y0:
-                new_sub=im_subset( x0i-pad[0], y0i-pad[1], stride[0]+2*pad[0], stride[1]+2*pad[1], self.source, pad_val=self.pad_val, Bands=self.Bands) 
+                new_sub=im_subset( x0i-pad[0], y0i-pad[1], stride[0]+2*pad[0], stride[1]+2*pad[1], self.source, pad_val=self.pad_val, Bands=self.Bands)
                 new_sub.copySubsetFrom()
                 yield new_sub
-   
+
     #def get_memory_usage(self):
     #    return check_obj_memory(self)
-   
+
 def match_range(s0, ns, d0, nd):
     i0 = max(s0, d0)
     i1 = min(s0+ns, d0+nd)
     si0=max(0, i0-s0)
     si1=min(ns, i1-s0)
     di0=max(0, i0-d0)
-    di1=min(nd,i1-d0)   
-    any_valid=(di1>di0) & (si1 > si0) 
+    di1=min(nd,i1-d0)
+    any_valid=(di1>di0) & (si1 > si0)
     return (si0, si1, di0, di1, any_valid)
-
- 
