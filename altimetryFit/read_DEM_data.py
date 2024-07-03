@@ -13,7 +13,7 @@ import glob
 import h5py
 import re
 from LSsurf.subset_DEM_stack import subset_DEM_stack
-
+from .remove_overlapping_DEM_data import remove_overlapping_DEM_data
 
 def read_problem_DEM_file(GI_files):
     # some DEMs come up as problematic in testing.  Here is where we remove them
@@ -95,8 +95,9 @@ def apply_DEM_metadata(D, DEM_meta_config):
 
 def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=20.,
                   blockmedian_scale=100., N_target=None, subset_stack=False, year_offset=0.5,
+                  DEM_dt_min=None,
                   DEM_meta_config=None, DEM_res=32, DEBUG=False, target_area=None, time_range=None,
-                  include_xtrack=False):
+                  include_xtrack=False, VERBOSE=True):
 
     if sensor_dict is None:
         sensor_dict={}
@@ -116,6 +117,15 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
         except TypeError:
             if DEBUG:
                 print(f"No data found for file: {this_file}")
+    for Di in D:
+        Di.crop([xy0[0]+np.array([-W['x']/2, W['x']/2]), xy0[1]+np.array([-W['y']/2, W['y']/2])])
+
+    DEM_res=np.NaN
+    for Di in D:
+        DEM_res = np.nanmedian(np.diff(np.unique(Di.x)))
+        if np.isfinite(DEM_res):
+            break
+    print("DEM_res is " + str(DEM_res))
 
     if time_range is not None:
         D = [Di  for Di in D if (Di.size > 0 ) and not (
@@ -154,6 +164,12 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
     if D is None or len(D)==0:
         return None, sensor_dict, None
 
+    if DEM_dt_min is not None:
+        # new: remove overlapping DEM data
+        bounds=[xy0[0]+np.array([-W['x']/2, W['x']/2]), xy0[1]+np.array([-W['y']/2, W['y']/2])]
+        remove_overlapping_DEM_data(D, bounds, 10*DEM_res, dt_min=DEM_dt_min)
+        D=[Di for Di in D if Di.size>100]
+
     # if N_target is specified, adjust the blockmedian scale to avoid reading more than
     # N_target points
     if N_target is not None:
@@ -171,6 +187,8 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
     for key_num, Di in enumerate(D):
         this_filename = os.path.basename(Di.filename)
         if this_filename in problem_DEMs:
+            if VERBOSE:
+                print(f"skipping problem DEM: {this_filename}")
             continue
         meta, DEM_meta_config = apply_DEM_metadata(Di, DEM_meta_config)
         if 'skip' in meta and meta['skip']:
