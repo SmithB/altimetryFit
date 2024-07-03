@@ -138,3 +138,4 @@ notebooks/*
 *queue*.txt
 \#*
 par_run*/
+default_args/*
