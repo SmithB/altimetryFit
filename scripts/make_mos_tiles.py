@@ -10,17 +10,21 @@ import os
 import stat
 
 
-def make_fields(max_coarse=40000, compute_lags=False, compute_sigma=False):
+def make_fields(max_coarse=40000, compute_lags=False, compute_sigma=False, compute_SMB=False):
 
     fields={}
     fields['z0']="z0 sigma_z0 misfit_rms misfit_scaled_rms mask cell_area count".split(' ')
-    #NOTE: This skipps the dz tiling
 
+    
     fields['dz']="dz sigma_dz count misfit_rms misfit_scaled_rms mask cell_area".split(' ')
     if not compute_sigma:
         fields['z0']=[field for field in fields['z0'].copy() if 'sigma' not in field]
         fields['dz']=[field for field in fields['dz'].copy() if 'sigma' not in field]
 
+    if compute_SMB:
+        for ff in fields.values():
+            ff += ['SMB_a','FAC']
+        
     if not compute_lags:
         return fields
 
@@ -77,6 +81,7 @@ parser.add_argument('-W', '--tile_W', type=float, help="input tile width", defau
 parser.add_argument('--width', type=float, help="output tile width", default=200000.)
 parser.add_argument('--base_dir','-b', type=str, required=True)
 parser.add_argument('--calc_sigma', action='store_true')
+parser.add_argument('--calc_SMB', action='store_true')
 parser.add_argument('--prelim', action='store_true')
 parser.add_argument('--tile_spacing', type=float, default=40000, help='distance between tile centers')
 parser.add_argument('--pad', type=float, default=1000)
@@ -97,7 +102,8 @@ if args.feather is None:
 
 fields=make_fields(max_coarse=np.minimum(40000, args.tile_W), \
                 compute_lags=args.calc_sigma, \
-                compute_sigma=args.calc_sigma)
+                   compute_sigma=args.calc_sigma, \
+                   compute_SMB=args.calc_SMB)
 xyc=make_tile_centers(in_dir, args.width)
 
 if args.out_dir is None:
