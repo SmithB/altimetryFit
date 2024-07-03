@@ -14,11 +14,26 @@ April 2023: SmithB merged lagrangian code into fit_altimetry.py
 
 import resource
 import os
-# make sure we're only using one thread
-os.environ['MKL_NUM_THREADS']="1"
-os.environ['NUMEXPR_NUM_THREADS']="1"
-os.environ['OMP_NUM_THREADS']="1"
-os.environ['OPENBLAS_NUM_THREADS']="1"
+import sys
+import re
+
+print(os.getcwd())
+
+
+threads_re=re.compile("THREADS=(\S+)")
+n_threads="1"
+for arg in sys.argv:
+    try:
+        n_threads=str(threads_re.search(arg).group(1))
+    except Exception:
+        pass
+if n_threads=="1" and "SLURM_NTASKS" in os.environ:
+    n_threads=os.environ['SLURM_NTASKS']
+    print(f"n_threads={n_threads}")
+os.environ["MKL_NUM_THREADS"]=n_threads
+os.environ["OPENBLAS_NUM_THREADS"]=n_threads
+os.environ['NUMEXPR_NUM_THREADS']=n_threads
+os.environ['OMP_NUM_THREADS']=n_threads
 
 
 #import warnings
@@ -34,13 +49,12 @@ from pyTMD import compute_tide_corrections
 from SMBcorr import assign_firn_variable
 from altimetryFit import SMB_corr_from_grid
 from altimetryFit.read_optical import read_optical_data, laser_key
-from CS2_fit.read_CS2_data import read_CS2_data
+from altimetryFit.read_CS2_data import read_CS2_data, radar_key
 import pointAdvection
 import h5py
 import sys
 import glob
 import json
-import re
 import xarray as xr
 
 def set_memory_limit(max_bytes):
@@ -190,13 +204,23 @@ def setup_lagrangian(velocity_files=None, lagrangian_epoch=None, reference_epoch
     y = fd_grid([bounds[1]], [spacing['dz']], name='y').ctrs[0]
     if 'xy01_grids' in velocity_files[0]:
         interpolator_save_file=velocity_files[0]
+        if not os.path.isfile(interpolator_save_file):
+            raise(FileNotFoundError(f"Interpolator save file {interpolator_save_file} not found"))
     else:
         interpolator_save_file=os.path.splitext(velocity_files[0])[0] +'_xy01_grids.h5'
     if os.path.isfile(interpolator_save_file):
         xy0_obj=pc.grid.data().from_h5(interpolator_save_file,group='xy0')
         xy1_obj=pc.grid.data().from_h5(interpolator_save_file,group='xy1')
+        xy0_obj.years_to_time=SPY
+        with h5py.File(interpolator_save_file,'r') as h5f:
+            try:
+                if h5f['xy0']['t'].attrs['units']=='years':
+                    print("years!")
+                    xy0_obj.years_to_time=1
+            except:
+                pass
         gridy, gridx, gridt = np.meshgrid(y, x,
-                                          (np.array(t_span)-lagrangian_epoch)*SPY, indexing='ij')
+                                          (np.array(t_span)-lagrangian_epoch)*xy0_obj.years_to_time, indexing='ij')
         x1=xy1_obj.interp(gridx.ravel(), gridy.ravel(), gridt.ravel(), field='x1')
         y1=xy1_obj.interp(gridx.ravel(), gridy.ravel(), gridt.ravel(), field='y1')
         x1 = np.append(x1, bounds[0])
@@ -214,7 +238,7 @@ def setup_lagrangian(velocity_files=None, lagrangian_epoch=None, reference_epoch
     adv = pointAdvection.advection(
         x=gridx.flatten(),
         y=gridy.flatten(),
-        t=np.zeros((x.N_nodes*y.N_nodes))
+        t=np.zeros(gridx.flatten().shape)
     )
     # read velocity image and trim to a buffer extent around points
     # use a wide buffer to encapsulate advections in fast moving areas
@@ -287,7 +311,7 @@ def apply_lagrangian_masks(data, x, y, mask_files=None, **kwargs):
         if mask is None or np.any(mask.shape==0):
             continue
         year_mask = pc.grid.DEM_year(mask_file)
-        t_mask=( year_mask - kwargs['lagrangian_epoch'])*24*3600*365.25
+        t_mask=( year_mask - kwargs['lagrangian_epoch'])*kwargs['xy0_obj'].years_to_time
         # if we have moved the points, the location of the points at the time of the mask is
         # found by interpolating into the xy1 object
         xx = kwargs['xy1_obj'].interp(x, y, t_mask, field='x1')
@@ -320,15 +344,19 @@ def update_data_for_lagrangian(data, lagrangian_ref_dem=None, mask_data=None, **
     #adv = kwargs['advection_obj']
     #adv.x = data.x.copy()
     #adv.y = data.y.copy()
-    t_lag = (data.time - kwargs['lagrangian_epoch'])*24*3600*365.25
+    t_lag = (data.time - kwargs['lagrangian_epoch'])*kwargs['xy0_obj'].years_to_time
     #adv.t = t_lag
     # calculate the number of seconds between data times and epoch
     # advect points to delta time 0
     #adv.translate_parcel(integrator='RK4', method=kwargs['lagrangian_interpolation'], t0=0)
     # xy0_interpolator(bounds=None, t_range=None, t_step=None)
 
-    x0 = kwargs['xy0_obj'].interp(data.x, data.y, t_lag, field='x0')
-    y0 = kwargs['xy0_obj'].interp(data.x, data.y, t_lag, field='y0')
+    if not kwargs['lagrangian_zero_velocity']:
+        x0 = kwargs['xy0_obj'].interp(data.x, data.y, t_lag, field='x0')
+        y0 = kwargs['xy0_obj'].interp(data.x, data.y, t_lag, field='y0')
+    else:
+        x0=data.x.copy()
+        y0=data.y.copy()
 
     if 'move_points' in kwargs and kwargs['move_points']:
         # use the mask data to remove data points that were measured at invalid locations
@@ -404,7 +432,11 @@ def save_fit_to_file(S,  filename, sensor_dict=None, dzdt_lags=None, reference_e
             h5f.create_dataset('/RMS/'+key, data=S['RMS'][key])
         h5f.create_group('E_RMS')
         for key in S['E_RMS']:
-            h5f.create_dataset('E_RMS/'+key, data=S['E_RMS'][key])
+            if S['E_RMS'][key] is None:
+                val=np.array([np.NaN])
+            else:
+                val=S['E_RMS'][key]
+            h5f.create_dataset('E_RMS/'+key, data=val)
         for key in S['m']['bias']:
             h5f.create_dataset('/bias/'+key, data=S['m']['bias'][key])
         if 'slope_bias' in S['m']:
@@ -433,7 +465,8 @@ def save_fit_to_file(S,  filename, sensor_dict=None, dzdt_lags=None, reference_e
                 ds.to_h5(filename, group=key)
     return
 
-def assign_sigma_corr(D, orbital_sensors=[1, 2], airborne_sensors=[3, 4, 5]):
+def assign_sigma_corr(D, orbital_sensors=[-2, -1, 1, 2], airborne_sensors=[3, 4, 5]):
+
     delta_t_corr={'airborne':60*10/(24*3600*365.25),
                   'orbital':10/(24*3600*365.25)}
     time_corr=D.time.copy()
@@ -445,7 +478,7 @@ def assign_sigma_corr(D, orbital_sensors=[1, 2], airborne_sensors=[3, 4, 5]):
     _, sensor_dict=pc.unique_by_rows(np.c_[D.sensor, D.time_corr], return_dict=True)
     for key, ind in sensor_dict.items():
         #skip DEMs
-        if key[0] > np.max(orbital_sensors+airborne_sensors):
+        if key[0] > np.max(orbital_sensors+airborne_sensors) or key[0] < 0:
             continue
         if np.any(np.isfinite(D.slope_mag[ind])):
             mean_slope=np.nanmean(D.slope_mag[ind])
@@ -474,7 +507,7 @@ def save_errors_to_file( S, filename):
                 h5f.create_dataset('/bias/sigma/'+key, data=S['E']['sigma_bias'][key])
     return
 
-def fit_altimetry(xy0, Wxy=4e4, \
+def fit_altimetry(xy0=None, Width=4e4, \
             reread_file=None,\
             E_RMS={}, t_span=[2003, 2020], spacing={'z0':2.5e2, 'dz':5.e2, 'dt':0.5},  \
             hemisphere=1, reference_epoch=None, reread_dirs=None, max_iterations=5, \
@@ -484,6 +517,7 @@ def fit_altimetry(xy0, Wxy=4e4, \
             sensor_dict={}, out_name=None, \
             bias_nsigma_edit=None, bias_nsigma_iteration=3,\
             replace=False, DOPLOT=False, spring_only=False, \
+            xy_bias_file=None,\
             firn_fixed=False, firn_rescale=False, \
             firn_correction=None, firn_directory=None, firn_version=None,\
             firn_grid_file=None,\
@@ -493,6 +527,7 @@ def fit_altimetry(xy0, Wxy=4e4, \
             and_mask_files=None, \
             or_mask_files=None, \
             DEM_file=None,\
+            DEM_tol=None,\
             mask_floating=False,\
             water_mask_threshold=None, \
             bm_scale=None,
@@ -515,7 +550,11 @@ def fit_altimetry(xy0, Wxy=4e4, \
             verbose=True,\
             reference_DEM_file = None,\
             reference_DEM_uncertainty = None,\
-            DEM_grid_bias_params=None):
+            DEM_dt_min=None,\
+            converge_tol_frac=0.005,\
+            params=None,\
+            DEM_grid_bias_params=None,\
+            DEM_sigma_corr=20):
     """
         Wrapper for smooth_xytb_fit_aug that can find data and set the appropriate parameters
     """
@@ -531,7 +570,7 @@ def fit_altimetry(xy0, Wxy=4e4, \
     E_RMS0={'d2z0_dx2':200000./3000/3000, 'd3z_dx2dt':3000./3000/3000, 'd2z_dxdt':3000/3000, 'd2z_dt2':5000}
     E_RMS0.update(E_RMS)
 
-    W={'x':Wxy, 'y':Wxy,'t':np.diff(t_span)}
+    W={'x':Width, 'y':Width,'t':np.diff(t_span)}
     ctr={'x':xy0[0], 'y':xy0[1], 't':np.mean(t_span)}
 
     bds={ dim: c_i+np.array([-0.5, 0.5])*W[dim]  for dim, c_i in ctr.items()}
@@ -569,7 +608,7 @@ def fit_altimetry(xy0, Wxy=4e4, \
 
     if lagrangian_dict is not None:
         lagrangian_dict = setup_lagrangian(
-            SRS_proj4=SRS_proj4, xy0=xy0, Wxy=Wxy,
+            SRS_proj4=SRS_proj4, xy0=xy0, Wxy=Width,
             t_span=t_span, spacing=spacing, reference_epoch=reference_epoch,
             **lagrangian_dict)
         if np.any(~np.isfinite(np.array(lagrangian_dict['bds']))):
@@ -600,18 +639,34 @@ def fit_altimetry(xy0, Wxy=4e4, \
                            't':W['t']}
         else:
             this_xy0, this_W = [xy0, W]
-        D, sensor_dict, DEM_meta_dict = read_optical_data(this_xy0, this_W, GI_files=GI_files, \
+        D, sensor_dict, DEM_meta_dict = read_optical_data(\
+                                this_xy0, this_W,\
+                                GI_files=GI_files, \
                                 SRS_proj4=get_SRS_proj4(hemisphere),\
                                 bm_scale=bm_scale,\
                                 N_target=N_target,\
                                 target_area=W['x']*W['y'],
-                                 mask_file=mask_file, geoid_file=geoid_file, \
-                                 mask_floating=mask_floating,\
-                                 water_mask_threshold=water_mask_threshold, \
-                                 time_range=t_span, \
-                                 DEM_file=DEM_file, \
-                                 hemisphere=hemisphere,
-                                 seg_diff_tol=seg_diff_tol)
+                                mask_file=mask_file, \
+                                geoid_file=geoid_file, \
+                                mask_floating=mask_floating,\
+                                water_mask_threshold=water_mask_threshold, \
+                                time_range=t_span, \
+                                DEM_file=DEM_file, \
+                                DEM_dt_min=DEM_dt_min,\
+                                DEM_sigma_corr=DEM_sigma_corr,\
+                                hemisphere=hemisphere,
+                                seg_diff_tol=seg_diff_tol,
+                                xy_bias_file=xy_bias_file)
+        if sensor_dict is None:
+            sensor_dict={}
+
+        if 'POCA' in GI_files:
+            if D is None:
+                D=[]
+            sensor_dict.update( {val:key for key,val in radar_key().items()})
+            D += read_CS2_data(xy0, W, GI_files, apply_filters=True,
+                DEM_file=DEM_file, dem_tol=DEM_tol, bias_lookup_dir=params['CS2']['bias_lookup_dir'],
+                sensor_dict=radar_key(), POCA_sensor=radar_key()['CS2_POCA'])
         for ind, Di in enumerate(D):
             if Di is None:
                 continue
@@ -619,10 +674,10 @@ def fit_altimetry(xy0, Wxy=4e4, \
                 if field not in Di.fields:
                     Di.assign({field:np.zeros_like(Di.x)+np.NaN})
 
-        data=pc.data(fields=['x','y','z','time','sigma','sigma_corr','slope_mag', 'sensor','spot', 'rgt','cycle','BP']).from_list(D)
+        data=pc.data(fields=['x','y','z','time','sigma','sigma_corr',
+                             'slope_mag', 'sensor','spot', 'rgt','cycle','BP']).from_list(D)
         data.assign({'day':np.floor(data.time*365.25)})
-        if extra_error is not None:
-            data.sigma[data.time < 2010] = np.sqrt(data.sigma[data.time<2010]**2 +extra_error**2)
+
         # apply the tides if a directory has been provided
         if tide_mask_file is not None:
             if hemisphere==1:
@@ -633,10 +688,11 @@ def fit_altimetry(xy0, Wxy=4e4, \
                 this_Wxy = np.max([*map(np.diff, data.bounds())])+5000
                 this_xy0 = [*map(np.mean, data.bounds())]
             else:
-                this_Wxy, this_xy0 = [Wxy, xy0]
+                this_Wxy, this_xy0 = [Width, xy0]
             apply_tides(data, this_xy0, this_Wxy, tide_mask_file, tide_directory, tide_model, EPSG=EPSG)
     else:
-        data, sensor_dict = reread_data_from_fits(xy0, Wxy, reread_dirs, template='E%d_N%d.h5')
+        data, sensor_dict = reread_data_from_fits(xy0, Width, reread_dirs, template='E%d_N%d.h5')
+
     if shelf_only and hasattr(data, 'floating'):
         data.index(data.floating>0.1)
         if data.size==0:
@@ -644,14 +700,21 @@ def fit_altimetry(xy0, Wxy=4e4, \
                 print("No non-floating data points found, returning")
             return None, None, None
 
-    laser_sensors=[item for key, item in laser_key().items()]
-    DEM_sensors=np.array([key for key in sensor_dict.keys() if key not in laser_sensors ])
+    altimeter_sensors = [item for key, item in laser_key().items()]\
+        + [item for key, item in radar_key().items()]
+
+    DEM_sensors=np.array([key for key in sensor_dict.keys() if key not in altimeter_sensors ])
+
     if reference_epoch is None:
         reference_epoch=len(np.arange(t_span[0], t_span[1], spacing['dt']))
 
     if lagrangian_dict is not None:
         lagrangian_dict=update_data_for_lagrangian( data, mask_data=mask_data,
             **lagrangian_dict)
+        if data.size==0 or np.sum(np.isfinite(data.z))==0:
+            if verbose:
+                print("After lagrangian advection, no valid data remain")
+            return None, None, None
 
     # make every dataset a double
     for field in data.fields:
@@ -671,8 +734,8 @@ def fit_altimetry(xy0, Wxy=4e4, \
             data.z -= data.h_firn
     if firn_rescale:
         # the grid has one node at each domain corner.
-        this_grid=fd_grid( [xy0[1]+np.array([-0.5, 0.5])*Wxy,
-                xy0[0]+np.array([-0.5, 0.5])*Wxy], [Wxy, Wxy],\
+        this_grid=fd_grid( [xy0[1]+np.array([-0.5, 0.5])*Width,
+                xy0[0]+np.array([-0.5, 0.5])*Width], [Width, Width],\
              name=firn_correction+'_scale', srs_proj4=SRS_proj4)
         bias_model_args += [{'name': firn_correction+'_scale',  \
                             'param':'h_firn',\
@@ -692,11 +755,6 @@ def fit_altimetry(xy0, Wxy=4e4, \
             sensor_grid_bias_params += [{'sensor':sensor, 'expected_val':0}]
             sensor_grid_bias_params[-1].update(DEM_grid_bias_params)
             sensor_grid_bias_params[-1].update({'filename':sensor_dict[sensor]})
-    # not sure why this was ever needed.  Commenting until there's a reason for not doing so
-    #if isinstance(data,pc.data):
-    #    temp=pc.data().from_dict({item:data.__dict__[item] for item in data.fields})
-    #    data=temp
-    #    temp=None
 
     # apply any custom edits
     custom_edits(data)
@@ -704,6 +762,8 @@ def fit_altimetry(xy0, Wxy=4e4, \
         if verbose:
             print("fit_altimetry:No data found, returning")
         return None, None, None
+
+    # assign time_corr and (for laser sensors) sigma_corr
     assign_sigma_corr(data)
 
     avg_masks=None
@@ -714,14 +774,15 @@ def fit_altimetry(xy0, Wxy=4e4, \
     if year_mask_dir is not None:
         mask_data_by_year(data, year_mask_dir);
 
-    sigma_extra_masks = {'laser': np.in1d(data.sensor, laser_sensors),
-                         'DEM': ~np.in1d(data.sensor, laser_sensors)}
-
+    #sigma_extra_masks = {'altimeter': np.in1d(data.sensor, altimeter_sensors),
+    #                     'DEM': ~np.in1d(data.sensor, altimeter_sensors)}
+    sigma_extra_keys={'altimeter':{'sensor':altimeter_sensors},
+                      'DEM':{'sensor':DEM_sensors}}
     if reference_DEM_file is not None:
         # N.B.  Reference DEM is subtracted AFTER firn correction
         data.z -= pc.grid.data().from_file(reference_DEM_file,
-                                    bounds=[xy0[0]+np.array([-0.5, 0.5])*Wxy,
-                                            xy0[1]+np.array([-0.5, 0.5])*Wxy])\
+                                    bounds=[xy0[0]+np.array([-0.5, 0.5])*Width,
+                                            xy0[1]+np.array([-0.5, 0.5])*Width])\
                     .interp(data.x, data.y)
         E_RMS0['z0'] = reference_DEM_uncertainty
     # run the fit
@@ -745,17 +806,17 @@ def fit_altimetry(xy0, Wxy=4e4, \
                      mask_scale={0:10, 1:1}, \
                      avg_scales=avg_scales, \
                      avg_masks=avg_masks, \
-                     sigma_extra_masks=sigma_extra_masks,\
+                     sigma_extra_keys=sigma_extra_keys,\
                      sensor_grid_bias_params=sensor_grid_bias_params,\
                      lagrangian_coords=lagrangian_coords,\
-                     converge_tol_frac_TSE=0.005)
+                     converge_tol_frac_TSE=converge_tol_frac)
 
     if lagrangian_dict is not None and S['data'] is not None and S['data'].size > 0:
         update_output_data_for_lagrangian(S, **lagrangian_dict)
 
     return S, data, sensor_dict
 
-def main(argv):
+def parse_inputs(argv):
     # account for a bug in argparse that misinterprets negative agruents
     for i, arg in enumerate(argv):
         if (arg[0] == '-') and arg[1].isdigit(): argv[i] = ' ' + arg
@@ -785,18 +846,24 @@ def main(argv):
     parser.add_argument('--E_slope_bias', type=float, default=1.e-5)
     parser.add_argument('--data_gap_scale', type=float,  default=2500)
     parser.add_argument('--max_iterations', type=int, default=8)
+    parser.add_argument('--param_files', type=str, help='comma-separated list of parameter files, of form name1:file1,name2:file2')
+    parser.add_argument('--xy_bias_file', type=str, help="CSV file containing fields delta_time, x_bias, and y_bias")
     parser.add_argument('--reference_DEM_file', type=str, help='DEM that will be subtracted from data before fitting')
     parser.add_argument('--reference_DEM_uncertainty', type=float, help='Uncertainty in the reference DEM is correct')
     parser.add_argument('--bias_params', type=str, nargs='+', default=['time_corr','sensor','spot'])
     parser.add_argument('--DEM_grid_bias_params_file', type=path, help='file containing DEM grid bias params')
+    parser.add_argument('--DEM_sigma_corr', type=float, default=20, help='tolerance for mean DEM bias, default=20')
     parser.add_argument('--bias_nsigma_edit', type=int, default=6, help='edit points whose estimated bias is more than this value times the expected')
     parser.add_argument('--bias_nsigma_iteration', type=int, default=6, help='apply bias_nsigma_edit after this iteration')
     parser.add_argument('--bm_scale_laser', type=float, default=50, help="blockmedian scale to apply to laser data")
     parser.add_argument('--bm_scale_DEM', type=float, default=200, help='blockmedian scale to apply to DEM data')
     parser.add_argument('--N_target_laser', type=float, default=200000, help='target number of laser data')
     parser.add_argument('--N_target_DEM', type=float, default=800000, help='target number of DEM data')
+    parser.add_argument('--N_target', type=str, help='specify target data count for sensors as sensor:N, with multiple arguments separated by commas')
     parser.add_argument('--extra_error', type=float)
     parser.add_argument('--DEM_file', type=path, help='DEM file to use with the DEM_tol parameter and in slope error calculations')
+    parser.add_argument('--DEM_tol', type=float, help='Tolerance for selecting points relative to the DEM file')
+    parser.add_argument('--DEM_dt_min', type=float, help="if two DEMs are closer to time than this value, data from the one with the larger errors will be deleted")
     parser.add_argument('--mask_floating', action="store_true")
     parser.add_argument('--map_dir','-m', type=path)
     parser.add_argument('--firn_directory', type=path, help='directory containing firn model')
@@ -814,6 +881,7 @@ def main(argv):
     parser.add_argument('--lagrangian_dz_spacing', type=float, help='field to estimate moving topography, ignores lagrangian argument')
     parser.add_argument('--lagrangian_dz_E_RMS', type=float, help='Expected RMS for moving topography')
     parser.add_argument('--lagrangian_dz_E_RMS_grad', type=float, help='Expected RMS gradient for moving topography')
+    parser.add_argument('--lagrangian_zero_velocity', action='store_true', help='If set, all parameters will match the lagrangian parameters, but velocity will be set to zero')
     parser.add_argument('--shelf_only', action='store_true', help='use only data points originally on the shelf')
     parser.add_argument('--mask_file', type=path)
     parser.add_argument('--and_mask_files', type=str, nargs='+')
@@ -829,8 +897,9 @@ def main(argv):
     parser.add_argument('--calc_error_for_xy', action='store_true')
     parser.add_argument('--avg_scales', type=str, help='scales at which to report average errors, comma-separated list, no spaces')
     parser.add_argument('--error_res_scale','-s', type=float, nargs=2, default=[4, 2], help='if the errors are being calculated (see calc_error_file), scale the grid resolution in x and y to be coarser')
+    parser.add_argument('--converge_tol_frac', type=float, default=0.005, help='if the fractional change between two smooth_fit iterations is less than this value, the iteration has converged')
     parser.add_argument('--max_mem', type=float, default=15., help='maximum memory the program is allowed to use, in GB.')
-    args, unk=parser.parse_known_args()
+    args, unk=parser.parse_known_args(argv)
 
     if unk:
         print("unknown arguments:"+str([jj for jj in unk if (len(jj)>0) and not jj[0]=='#']))
@@ -849,17 +918,16 @@ def main(argv):
         if args.reference_time is None:
             raise(ValueError("Need to specify either reference_epoch or reference_time"))
         args.reference_epoch = np.argmin(np.abs(
-            np.arange(args.time_span[0], args.time_span[1], args.grid_spacing[2])-args.reference_time))
+            np.arange(args.time_span[0], args.time_span[1]+0.01*args.grid_spacing[2], args.grid_spacing[2])-args.reference_time))
 
-
-    spacing={'z0':args.grid_spacing[0], 'dz':args.grid_spacing[1], 'dt':args.grid_spacing[2]}
-    E_RMS={'d2z0_dx2':args.E_d2z0dx2, 'd3z_dx2dt':args.E_d3zdx2dt, 'd2z_dxdt':args.E_d3zdx2dt*args.data_gap_scale,  'd2z_dt2':args.E_d2zdt2}
+    args.spacing={'z0':args.grid_spacing[0], 'dz':args.grid_spacing[1], 'dt':args.grid_spacing[2]}
+    args.E_RMS={'d2z0_dx2':args.E_d2z0dx2, 'd3z_dx2dt':args.E_d3zdx2dt, 'd2z_dxdt':args.E_d3zdx2dt*args.data_gap_scale,  'd2z_dt2':args.E_d2zdt2}
 
     # read in the geoIndex locations
     with open(args.GeoIndex_source_file) as fh:
-        geoIndex_dict=json.load(fh)
+        args.geoIndex_dict=json.load(fh)
 
-    reread_dirs=None
+    args.reread_dirs=None
     if args.prelim:
         dest_dir = args.base_directory+'/prelim'
 
@@ -890,81 +958,115 @@ def main(argv):
     if args.error_res_scale is not None:
         if args.calc_error_file is not None:
             for ii, key in enumerate(['z0','dz']):
-                spacing[key] *= args.error_res_scale[ii]
+                args.spacing[key] *= args.error_res_scale[ii]
 
     if args.bias_params is not None and " " in args.bias_params[0]:
         args.bias_params=args.bias_params[0].split(" ")
 
-    DEM_bias_params=None
+    args.DEM_bias_params=None
     if args.DEM_grid_bias_params_file is not None:
         # DEM_bias_params file should include key=value lines, with keys:
         #spacing, expected_rms, expected_rms_grad
-        DEM_bias_params={}
+        args.DEM_bias_params={}
         with open(args.DEM_grid_bias_params_file, 'r') as fh:
             for line in fh:
+                if len(line.rstrip())==0:
+                    continue
                 try:
                     if line[0]=="#":
                         continue
                     key, val = line.rstrip().split('=')
                     try:
                         # is val a float?
-                        DEM_bias_params[key]=float(val.split('#')[0])
+                        args.DEM_bias_params[key]=float(val.split('#')[0])
                     except ValueError:
                         # if not, assume str
-                        DEM_bias_params[key]=val.split('#')[0]
+                        args.DEM_bias_params[key]=val.split('#')[0]
                 except Exception:
                     print("problem with DEM_bias_params line\n"+line)
 
-    if not os.path.isdir(args.base_directory):
-        os.mkdir(args.base_directory)
-    if not os.path.isdir(dest_dir):
-        os.mkdir(dest_dir)
+    args.params={}
+    if args.param_files is not None:
+        for temp in args.param_files.split(','):
+            name, file = temp.split(':')
+            with open(file,'r') as fh:
+                args.params[name]=json.load(fh)
+                args.params[name]['param_file']=file
+
+    for thedir in [args.base_directory, dest_dir]:
+        try:
+            os.mkdir(dest_dir)
+        except FileExistsError:
+            pass
 
     if args.out_name is None:
         args.out_name=dest_dir + '/E%d_N%d.h5' % (args.xy0[0]/1e3, args.xy0[1]/1e3)
 
-    lagrangian_dict=None
+    args.lagrangian_dict=None
     if args.lagrangian:
         if args.lagrangian_epoch is None:
             args.lagrangian_epoch = np.arange(args.time_span[0], args.time_span[1], args.grid_spacing[2])[args.reference_epoch]
-        lagrangian_dict = {field:getattr(args, field) for field in \
+        args.lagrangian_dict = {field:getattr(args, field) for field in \
                            ['velocity_files', 'lagrangian_epoch', 'lagrangian_ref_dem',
                             'lagrangian_dz_spacing', 'lagrangian_dz_E_RMS',
-                            'lagrangian_dz_E_RMS_grad', 'lagrangian_mask_files']
+                            'lagrangian_dz_E_RMS_grad', 'lagrangian_mask_files',
+                            'lagrangian_zero_velocity']
                            }
+    N_target={}
+    if args.N_target is not None:
+        N_target={}
+        for arg in args.N_target.split(','):
+            sensor, N = arg.split(':')
+            N_target[sensor]=int(N)
+    if args.N_target_laser is not None:
+        N_target['laser']=args.N_target_laser
+    if args.N_target_DEM is not None:
+        N_target['DEM']=args.N_target_DEM
+
+    args.bm_scale={'laser':args.bm_scale_laser,\
+                 'DEM':args.bm_scale_DEM}
+    return args
+
+def main(argv):
+
+    args=parse_inputs(argv)
 
     S, data, sensor_dict = fit_altimetry(args.xy0, \
-            Wxy=args.Width, E_RMS=E_RMS, \
-            t_span=args.time_span, spacing=spacing, \
+            Width=args.Width, E_RMS=args.E_RMS, \
+            t_span=args.time_span,\
+            spacing=args.spacing, \
             reference_epoch=args.reference_epoch, \
             reread_file=args.reread_file,\
             calc_error_file=args.calc_error_file,\
             error_res_scale=args.error_res_scale,\
+            converge_tol_frac=args.converge_tol_frac,\
             max_iterations=args.max_iterations, \
             bias_nsigma_edit=args.bias_nsigma_edit,
             bias_nsigma_iteration=args.bias_nsigma_iteration,\
             bias_params=args.bias_params,\
+            params=args.params,\
             reference_DEM_file=args.reference_DEM_file,\
             reference_DEM_uncertainty=args.reference_DEM_uncertainty,\
-            hemisphere=args.Hemisphere, reread_dirs=reread_dirs, \
+            hemisphere=args.Hemisphere, \
+            reread_dirs=args.reread_dirs, \
             out_name=args.out_name, \
-            GI_files=geoIndex_dict,\
-            bm_scale={'laser':args.bm_scale_laser,\
-                         'DEM':args.bm_scale_DEM},\
-            N_target={'laser':args.N_target_laser,\
-                         'DEM':args.N_target_DEM},
+            GI_files=args.geoIndex_dict,\
+            bm_scale=args.bm_scale,\
+            N_target=args.N_target,\
+            xy_bias_file=args.xy_bias_file,\
             firn_directory=args.firn_directory,\
             firn_version=args.firn_version,\
             firn_correction=args.firn_model,\
             firn_grid_file=args.firn_grid_file,\
             firn_fixed=args.firn_fixed,\
             firn_rescale=args.firn_rescale,\
-            lagrangian_dict=lagrangian_dict,\
+            lagrangian_dict=args.lagrangian_dict,\
             shelf_only=args.shelf_only,\
             mask_file=args.mask_file, \
             and_mask_files=args.and_mask_files,\
             or_mask_files=args.or_mask_files,\
             DEM_file=args.DEM_file,\
+            DEM_tol=args.DEM_tol,
             geoid_file=args.geoid_file,\
             mask_floating=args.mask_floating,\
             extra_error=args.extra_error, \
@@ -975,9 +1077,11 @@ def main(argv):
             tide_mask_file=args.tide_mask_file, \
             tide_model=args.tide_model, \
             avg_mask_directory=args.avg_mask_directory, \
-            dzdt_lags=args.dzdt_lags, \
+            dzdt_lags=args.dzdt_lags,\
             avg_scales=args.avg_scales,\
-            DEM_grid_bias_params=DEM_bias_params)
+            DEM_dt_min=args.DEM_dt_min,\
+            DEM_sigma_corr=args.DEM_sigma_corr,\
+            DEM_grid_bias_params=args.DEM_bias_params)
 
     if S is None:
         return
