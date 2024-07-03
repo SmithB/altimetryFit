@@ -7,12 +7,18 @@ base=$1
 # for 60-km tiles:
 #pad=5000; feather=5000
 # for 80-km tiles, overlapping 40 km
-pad=10000; feather=20000
+#pad=10000; feather=20000
+# 10-km overlap
+pad=2000; feather=6000
+
+
+echo "creating "$base/dz.h5
 
 rm $base/dz.h5 ;
-make_mosaic.py -v -R -w -p $pad -f $feather  -d $base -g '/E*.h5' -O $base/dz.h5 --in_group dz/ -F  count dz sigma_dz misfit_scaled_rms misfit_rms cell_area mask
+make_mosaic.py -v -R -w -p $pad -f $feather  -d $base -g '/E*.h5' -O dz.h5 --in_group dz/ -F  count dz sigma_dz misfit_scaled_rms misfit_rms cell_area mask
+echo ""
 # including errors:
-make_mosaic.py -R -w -p $pad -f $feather  -d $base -g '/E*.h5' -O $base/dz.h5 --in_group dz/ -F  sigma_dz 
+#make_mosaic.py -R -w -p $pad -f $feather  -d $base -g '/E*.h5' -O $base/dz.h5 --in_group dz/ -F  sigma_dz 
 # including SMB fields:
 #make_mosaic.py -w -p $pad -f $feather  -d $base -g '/E*.h5' -O $base/dz.h5 --in_group dz/ -F SMB_a
 #make_mosaic.py -w -p $pad -f $feather  -d $base -g '/E*.h5' -O $base/dz.h5 --in_group dz/ -F FAC
@@ -26,7 +32,7 @@ this_replace='-R'
 fields="z0 sigma_z0 count misfit_rms misfit_scaled_rms cell_area mask"
 for field in $fields; do
     echo $field
-    make_mosaic.py -w -p $pad -f $feather -d $base -g '/*.h5' -O $base/z0.h5 --in_group z0 -F $field $this_replace
+    make_mosaic.py -v -w -p $pad -f $feather -d $base -g '/*.h5' -O z0.h5 --in_group z0 -F $field $this_replace
     this_replace=''
 
 done
