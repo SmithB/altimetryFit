@@ -10,3 +10,4 @@ from .get_pgc import get_pgc
 from .est_DEM_jitter_AT import *
 from .SMB_corr_from_grid import SMB_corr_from_grid
 from .remove_overlapping_DEM_data import remove_overlapping_DEM_data
+from .fit_altimetry import fit_altimetry

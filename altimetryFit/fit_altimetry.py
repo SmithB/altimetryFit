@@ -45,8 +45,14 @@ from LSsurf.smooth_fit import smooth_fit
 from LSsurf import fd_grid
 from altimetryFit.reread_data_from_fits import reread_data_from_fits
 import pointCollection as pc
-from pyTMD import compute_tide_corrections
-from SMBcorr import assign_firn_variable
+try:
+    from pyTMD import compute_tide_corrections
+except Exception:
+    pass
+try:
+    from SMBcorr import assign_firn_variable
+except Exception:
+    pass
 from altimetryFit import SMB_corr_from_grid
 from altimetryFit.read_optical import read_optical_data, laser_key
 from altimetryFit.read_CS2_data import read_CS2_data, radar_key
@@ -104,11 +110,15 @@ def custom_edits(data):
     None.
 
     '''
-    # day 731891 has bad ICESat elevations
-    bad=data.day==731891
-   # bad ICESat data for 2003.782
-    bad=np.abs(data.time - 2003.7821) < 0.1/24/365.25
-    data.index(bad==0)
+    try:
+        # day 731891 has bad ICESat elevations
+        bad=data.day==731891
+        # bad ICESat data for 2003.782
+        bad=np.abs(data.time - 2003.7821) < 0.1/24/365.25
+        data.index(bad==0)
+    except AttributeError:
+        print("fit_altimetry.custom_data_edits: Expected data fields not found, skipping")
+    
 
 def apply_tides(D, xy0, W, tide_mask_file, tide_directory, tide_model, EPSG=3031):
     # read in the tide mask (for Antarctica) and apply dac and tide to ice-shelf elements
@@ -480,7 +490,7 @@ def assign_sigma_corr(D, orbital_sensors=[-2, -1, 1, 2], airborne_sensors=[3, 4,
         #skip DEMs
         if key[0] > np.max(orbital_sensors+airborne_sensors) or key[0] < 0:
             continue
-        if np.any(np.isfinite(D.slope_mag[ind])):
+        if 'slope_mag' in D.fields and np.any(np.isfinite(D.slope_mag[ind])):
             mean_slope=np.nanmean(D.slope_mag[ind])
         else:
             mean_slope=0
@@ -509,6 +519,7 @@ def save_errors_to_file( S, filename):
 
 def fit_altimetry(xy0=None, Width=4e4, \
             reread_file=None,\
+            data=None,\
             E_RMS={}, t_span=[2003, 2020], spacing={'z0':2.5e2, 'dz':5.e2, 'dt':0.5},  \
             hemisphere=1, reference_epoch=None, reread_dirs=None, max_iterations=5, \
             dzdt_lags=[1, 4], \
@@ -588,7 +599,14 @@ def fit_altimetry(xy0=None, Width=4e4, \
         repeat_res=None
 
     pad=np.array([-1.e4, 1.e4])
-    mask_data=pc.grid.data().from_file(mask_file,bounds=[bds['x']+pad, bds['y']+pad])
+    if mask_file is not None:
+        mask_data=pc.grid.data().from_file(mask_file,bounds=[bds['x']+pad, bds['y']+pad])
+    else:
+        bds_pad=[jj+pad for jj in bds.values()]
+        mask_data=pc.grid.data().from_dict({'x':np.arange(bds_pad[0][0], bds_pad[0][1]+.1, spacing['dz']),
+                                            'y':np.arange(bds_pad[1][0], bds_pad[1][1]+.1, spacing['dz'])})
+        mask_data.assign(z=np.ones((len(mask_data.x), len(mask_data.y))))
+
     if shelf_only:
         # mask out anything that's not shelf
         if mask_data.z.ndim==2:
@@ -625,7 +643,10 @@ def fit_altimetry(xy0=None, Width=4e4, \
             # move points by default
             lagrangian_dict['move_points'] = True
 
-    if reread_file is not None:
+    if data is not None:
+        print('have input data!')
+        sensor_dict={}
+    elif reread_file is not None:
         # get xy0 from the filename
         re_match=re.compile('E(.*)_N(.*).h5').search(reread_file)
         xy0=[float(re_match.group(ii))*1000 for ii in [1, 2]]
