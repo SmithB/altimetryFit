@@ -156,8 +156,10 @@ def read_CS2_data(xy0, W, index_files, apply_filters=True, DEM_file=None,
         DEM=None
 
     D=[]
-    D += [read_poca_data( xy0, W, index_files['POCA'], apply_filters=apply_filters, DEM=DEM, bias_lookup_dir=bias_lookup_dir)]
-    D += [read_swath_data(xy0, W, index_files['swath'], apply_filters=apply_filters, DEM=DEM, bias_lookup_dir=bias_lookup_dir)]
+    if 'POCA' in index_files:
+        D += [read_poca_data( xy0, W, index_files['POCA'], apply_filters=apply_filters, DEM=DEM, bias_lookup_dir=bias_lookup_dir)]
+    if 'swath' in index_files:
+        D += [read_swath_data(xy0, W, index_files['swath'], apply_filters=apply_filters, DEM=DEM, bias_lookup_dir=bias_lookup_dir)]
     # eliminate Nonetype objects within D
     D = [Di for Di in D if Di is not None]
     

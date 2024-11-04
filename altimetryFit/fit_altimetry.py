@@ -17,9 +17,6 @@ import os
 import sys
 import re
 
-print(os.getcwd())
-
-
 threads_re=re.compile("THREADS=(\S+)")
 n_threads="1"
 for arg in sys.argv:
@@ -45,10 +42,11 @@ from LSsurf.smooth_fit import smooth_fit
 from LSsurf import fd_grid
 from altimetryFit.reread_data_from_fits import reread_data_from_fits
 import pointCollection as pc
-from pyTMD import compute_tide_corrections
 from SMBcorr import assign_firn_variable
+from altimetryFit.apply_tides import apply_tides
 from altimetryFit import SMB_corr_from_grid
 from altimetryFit.read_optical import read_optical_data, laser_key
+from altimetryFit.read_DEM_data import regen_DEM_meta
 from altimetryFit.read_CS2_data import read_CS2_data, radar_key
 import pointAdvection
 import h5py
@@ -109,30 +107,6 @@ def custom_edits(data):
    # bad ICESat data for 2003.782
     bad=np.abs(data.time - 2003.7821) < 0.1/24/365.25
     data.index(bad==0)
-
-def apply_tides(D, xy0, W, tide_mask_file, tide_directory, tide_model, EPSG=3031):
-    # read in the tide mask (for Antarctica) and apply dac and tide to ice-shelf elements
-    # the tide mask should be 1 for non-grounded points (ice shelves?), zero otherwise
-    tide_mask = pc.grid.data().from_geotif(tide_mask_file, bounds=[np.array([-0.6, 0.6])*W+xy0[0], np.array([-0.6, 0.6])*W+xy0[1]])
-    is_els=tide_mask.interp(D.x, D.y) > 0.5
-    D.assign(floating=is_els)
-    print(f"\t\t{np.mean(is_els)*100}% shelf data")
-    D.assign({'tide_ocean':np.zeros_like(D.x)})
-    if np.any(is_els.ravel()):
-        # N.B.  removed the half-day offset in the tide correction.
-        # Old version read:  (D.time-(2018+0.5/365.25))*24*3600*365.25
-        # updates have made time values equivalent to years- Y2K +2000,
-        # consistent between IS1 and IS2 (2/18/2022)
-        D.tide_ocean = compute_tide_corrections(\
-                D.x, D.y, (D.time-2000)*24*3600*365.25,
-                DIRECTORY=tide_directory, MODEL=tide_model,
-                EPOCH=(2000,1,1,0,0,0), TYPE='drift', TIME='utc', EPSG=EPSG)
-    D.tide_ocean[is_els==0] = 0
-    #D.dac[is_els==0] = 0
-    D.tide_ocean[~np.isfinite(D.tide_ocean)] = 0
-    #D.dac[~np.isfinite(D.dac)] = 0
-    D.z -= D.tide_ocean
-    return D
 
 def mask_data_by_year(data, mask_dir):
     masks={}
@@ -203,16 +177,20 @@ def setup_lagrangian(velocity_files=None, lagrangian_epoch=None, reference_epoch
     x = fd_grid([bounds[0]], [spacing['dz']], name='x').ctrs[0]
     y = fd_grid([bounds[1]], [spacing['dz']], name='y').ctrs[0]
     if 'xy01_grids' in velocity_files[0]:
-        interpolator_save_file=velocity_files[0]
-        if not os.path.isfile(interpolator_save_file):
-            raise(FileNotFoundError(f"Interpolator save file {interpolator_save_file} not found"))
+        interpolator_save_files=velocity_files
+        if not os.path.isfile(interpolator_save_files[0]):
+            interpolator_save_files=glob.glob(interpolator_save_files[0])
+            if len(interpolator_save_files)==0:
+                raise(FileNotFoundError(f"Interpolator save files {interpolator_save_files} not found"))
     else:
         interpolator_save_file=os.path.splitext(velocity_files[0])[0] +'_xy01_grids.h5'
-    if os.path.isfile(interpolator_save_file):
-        xy0_obj=pc.grid.data().from_h5(interpolator_save_file,group='xy0')
-        xy1_obj=pc.grid.data().from_h5(interpolator_save_file,group='xy1')
+    if os.path.isfile(interpolator_save_files[0]):
+        xy0_obj=pc.grid.mosaic().from_list(interpolator_save_files, bounds=bounds, group='xy0')
+        #xy0_obj=pc.grid.data().from_h5(interpolator_save_file,group='xy0')
+        xy1_obj=pc.grid.mosaic().from_list(interpolator_save_files, bounds=bounds, group='xy1')
+        #xy1_obj=pc.grid.data().from_h5(interpolator_save_file,group='xy1')
         xy0_obj.years_to_time=SPY
-        with h5py.File(interpolator_save_file,'r') as h5f:
+        with h5py.File(interpolator_save_files[0],'r') as h5f:
             try:
                 if h5f['xy0']['t'].attrs['units']=='years':
                     print("years!")
@@ -521,6 +499,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
             firn_fixed=False, firn_rescale=False, \
             firn_correction=None, firn_directory=None, firn_version=None,\
             firn_grid_file=None,\
+            calc_FAC_anomaly=True,\
             GI_files=None,\
             geoid_file=None,\
             mask_file=None, \
@@ -528,6 +507,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
             or_mask_files=None, \
             DEM_file=None,\
             DEM_tol=None,\
+            problem_DEM_file=None,\
             mask_floating=False,\
             water_mask_threshold=None, \
             bm_scale=None,
@@ -543,6 +523,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
             shelf_only=False,\
             tide_directory=None, \
             tide_model='CATS2008', \
+            tide_adjustment_file=None,
             year_mask_dir=None, \
             avg_scales=None,\
             bias_params=['time_corr','sensor','spot'],\
@@ -575,6 +556,9 @@ def fit_altimetry(xy0=None, Width=4e4, \
 
     bds={ dim: c_i+np.array([-0.5, 0.5])*W[dim]  for dim, c_i in ctr.items()}
 
+    if bias_params is not None and len(bias_params)==1:
+        if ',' in bias_params[0]:
+            bias_params=bias_params[0].split(',')
     if out_name is not None:
         try:
             out_name=out_name %(xy0[0]/1000, xy0[1]/1000)
@@ -627,10 +611,13 @@ def fit_altimetry(xy0=None, Width=4e4, \
 
     if reread_file is not None:
         # get xy0 from the filename
-        re_match=re.compile('E(.*)_N(.*).h5').search(reread_file)
+        re_match=re.compile('/E(.*)_N(.*).h5').search(reread_file)
         xy0=[float(re_match.group(ii))*1000 for ii in [1, 2]]
         data=pc.data().from_h5(reread_file, group='data')
         sensor_dict=make_sensor_dict(reread_file)
+        DEM_meta_dict = regen_DEM_meta(xy0, W, data, reread_file, GI_files['DEM'],
+                        read_basis_vectors=True,
+                        pgc_url_file = DEM_grid_bias_params['jitter_url_list_file'])
     elif reread_dirs is None:
         if lagrangian_dict is not None and lagrangian_dict['move_points']:
             this_xy0=[*map(np.mean, lagrangian_dict['bds'])]
@@ -639,6 +626,8 @@ def fit_altimetry(xy0=None, Width=4e4, \
                            't':W['t']}
         else:
             this_xy0, this_W = [xy0, W]
+        if DEM_grid_bias_params is not None and 'jitter_url_list_file' in DEM_grid_bias_params:
+            pgc_url_file=DEM_grid_bias_params['jitter_url_list_file']
         D, sensor_dict, DEM_meta_dict = read_optical_data(\
                                 this_xy0, this_W,\
                                 GI_files=GI_files, \
@@ -653,10 +642,13 @@ def fit_altimetry(xy0=None, Width=4e4, \
                                 time_range=t_span, \
                                 DEM_file=DEM_file, \
                                 DEM_dt_min=DEM_dt_min,\
+                                pgc_url_file=pgc_url_file,
                                 DEM_sigma_corr=DEM_sigma_corr,\
                                 hemisphere=hemisphere,
+                                problem_DEM_file=problem_DEM_file,
                                 seg_diff_tol=seg_diff_tol,
                                 xy_bias_file=xy_bias_file)
+
         if sensor_dict is None:
             sensor_dict={}
 
@@ -689,10 +681,24 @@ def fit_altimetry(xy0=None, Width=4e4, \
                 this_xy0 = [*map(np.mean, data.bounds())]
             else:
                 this_Wxy, this_xy0 = [Width, xy0]
-            apply_tides(data, this_xy0, this_Wxy, tide_mask_file, tide_directory, tide_model, EPSG=EPSG)
+
+            apply_tides(data, this_xy0, this_Wxy,
+                            tide_mask_file=tide_mask_file,
+                            tide_mask_data=None,
+                            tide_directory=tide_directory,
+                            tide_model=tide_model,
+                            tide_adjustment = (tide_adjustment_file is not None),
+                            tide_adjustment_file = tide_adjustment_file,
+                            extrapolate=True,
+                            cutoff=200,
+                            EPSG=EPSG)
+
+            #apply_tides( tide_mask_file, tide_directory, tide_model, EPSG=EPSG)
     else:
         data, sensor_dict = reread_data_from_fits(xy0, Width, reread_dirs, template='E%d_N%d.h5')
 
+    print("fit_altimetry:")
+    print(data.summary())
     if shelf_only and hasattr(data, 'floating'):
         data.index(data.floating>0.1)
         if data.size==0:
@@ -726,7 +732,8 @@ def fit_altimetry(xy0=None, Width=4e4, \
             if firn_correction=='MERRA2_hybrid':
                 # defaults work here:
                 SMB_corr_from_grid(data,
-                                   model_file=os.path.join(firn_directory,firn_grid_file))
+                                   model_file=os.path.join(firn_directory,firn_grid_file),
+                                   calc_FAC_anomaly = calc_FAC_anomaly)
         else:
             assign_firn_variable(data, firn_correction, firn_directory, hemisphere,
                          model_version=firn_version, subset_valid=True)
@@ -754,6 +761,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
         for sensor in DEM_sensors:
             sensor_grid_bias_params += [{'sensor':sensor, 'expected_val':0}]
             sensor_grid_bias_params[-1].update(DEM_grid_bias_params)
+            sensor_grid_bias_params[-1].update(DEM_meta_dict[sensor])
             sensor_grid_bias_params[-1].update({'filename':sensor_dict[sensor]})
 
     # apply any custom edits
@@ -864,6 +872,7 @@ def parse_inputs(argv):
     parser.add_argument('--DEM_file', type=path, help='DEM file to use with the DEM_tol parameter and in slope error calculations')
     parser.add_argument('--DEM_tol', type=float, help='Tolerance for selecting points relative to the DEM file')
     parser.add_argument('--DEM_dt_min', type=float, help="if two DEMs are closer to time than this value, data from the one with the larger errors will be deleted")
+    parser.add_argument('--problem_DEM_file', type=path, help='file listing problematic DEM files')
     parser.add_argument('--mask_floating', action="store_true")
     parser.add_argument('--map_dir','-m', type=path)
     parser.add_argument('--firn_directory', type=path, help='directory containing firn model')
@@ -873,6 +882,7 @@ def parse_inputs(argv):
     parser.add_argument('--rerun_file_with_firn', type=str)
     parser.add_argument('--firn_rescale', action='store_true')
     parser.add_argument('--firn_fixed', action='store_true')
+    parser.add_argument('--full_FAC_correction', action='store_true', help='if specified, subtract the full FAC from the data, rather than the anomaly.')
     parser.add_argument('--lagrangian', action='store_true')
     parser.add_argument('--velocity_files', type=path, nargs='+', help='lagrangian velocity files.  May contain multiple time values.')
     parser.add_argument('--lagrangian_epoch', type=float, help='time (decimal year) to which data will be advected')
@@ -892,6 +902,7 @@ def parse_inputs(argv):
     parser.add_argument('--tide_mask_file', type=path)
     parser.add_argument('--tide_directory', type=path)
     parser.add_argument('--tide_model', type=str, help='tide model name')
+    parser.add_argument('--tide_adjustment_file', type=str, help='h5 file_giving scaling for tide model')
     parser.add_argument('--avg_mask_directory', type=path)
     parser.add_argument('--calc_error_file','-c', type=path)
     parser.add_argument('--calc_error_for_xy', action='store_true')
@@ -906,7 +917,6 @@ def parse_inputs(argv):
 
     if args.max_mem is not None and args.max_mem > 0:
         set_memory_limit(int(args.max_mem*1024*1024*1024))
-
 
     if args.avg_scales is not None:
         args.avg_scales = [int(temp) for temp in args.avg_scales.split(',')]
@@ -926,6 +936,11 @@ def parse_inputs(argv):
     # read in the geoIndex locations
     with open(args.GeoIndex_source_file) as fh:
         args.geoIndex_dict=json.load(fh)
+
+    if args.full_FAC_correction:
+        args.calc_FAC_anomaly=False
+    else:
+        args.calc_FAC_anomaly=True
 
     args.reread_dirs=None
     if args.prelim:
@@ -1012,16 +1027,20 @@ def parse_inputs(argv):
                             'lagrangian_dz_E_RMS_grad', 'lagrangian_mask_files',
                             'lagrangian_zero_velocity']
                            }
+
     N_target={}
     if args.N_target is not None:
         N_target={}
         for arg in args.N_target.split(','):
             sensor, N = arg.split(':')
             N_target[sensor]=int(N)
-    if args.N_target_laser is not None:
-        N_target['laser']=args.N_target_laser
-    if args.N_target_DEM is not None:
-        N_target['DEM']=args.N_target_DEM
+        args.N_target=N_target
+    else:
+        args.N_target={}
+        if args.N_target_laser is not None:
+            args.N_target['laser']=args.N_target_laser
+        if args.N_target_DEM is not None:
+            args.N_target['DEM']=args.N_target_DEM
 
     args.bm_scale={'laser':args.bm_scale_laser,\
                  'DEM':args.bm_scale_DEM}
@@ -1030,6 +1049,8 @@ def parse_inputs(argv):
 def main(argv):
 
     args=parse_inputs(argv)
+    if isinstance(args, int):
+        return args
 
     S, data, sensor_dict = fit_altimetry(args.xy0, \
             Width=args.Width, E_RMS=args.E_RMS, \
@@ -1047,6 +1068,7 @@ def main(argv):
             params=args.params,\
             reference_DEM_file=args.reference_DEM_file,\
             reference_DEM_uncertainty=args.reference_DEM_uncertainty,\
+            problem_DEM_file=args.problem_DEM_file,\
             hemisphere=args.Hemisphere, \
             reread_dirs=args.reread_dirs, \
             out_name=args.out_name, \
@@ -1060,6 +1082,7 @@ def main(argv):
             firn_grid_file=args.firn_grid_file,\
             firn_fixed=args.firn_fixed,\
             firn_rescale=args.firn_rescale,\
+            calc_FAC_anomaly=args.calc_FAC_anomaly,\
             lagrangian_dict=args.lagrangian_dict,\
             shelf_only=args.shelf_only,\
             mask_file=args.mask_file, \
@@ -1076,6 +1099,7 @@ def main(argv):
             tide_directory=args.tide_directory, \
             tide_mask_file=args.tide_mask_file, \
             tide_model=args.tide_model, \
+            tide_adjustment_file=args.tide_adjustment_file, \
             avg_mask_directory=args.avg_mask_directory, \
             dzdt_lags=args.dzdt_lags,\
             avg_scales=args.avg_scales,\
