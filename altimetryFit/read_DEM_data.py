@@ -12,14 +12,23 @@ import json
 import glob
 import h5py
 import re
+import LSsurf as LS
+from .get_ATC_xform import get_DEM_ATC_xform
 from LSsurf.subset_DEM_stack import subset_DEM_stack
 from .remove_overlapping_DEM_data import remove_overlapping_DEM_data
 
-def read_problem_DEM_file(GI_files):
+
+def get_2m_filename(thefile):
+    DEM_re=re.compile('(.*)_\d+m_(.*)')
+    return '_2m_'.join(DEM_re.search(os.path.basename(thefile)).groups()).replace('_filt.tif','.tif')
+
+def read_problem_DEM_file(GI_files, problem_DEM_file=None):
     # some DEMs come up as problematic in testing.  Here is where we remove them
     # need to make a 'problem_DEMs.txt' file in the same directory as the GI.
-    # Lines should have a filename (no directory) and an optional comment
-    problem_DEMs=[]
+    # Optionally, we can read a problem_DEM file listing problematic DEMs found
+    # from different sources
+    # Lines should have a filename (directory not required) and an optional comment
+    DEM_list=[]
     for ff in GI_files:
         problem_DEMs_file=os.path.dirname(ff)+'/problem_DEMs.txt'
 
@@ -29,7 +38,22 @@ def read_problem_DEM_file(GI_files):
                     # skip commented lines
                     if line[0] == '#':
                         continue
-                    problem_DEMs += [line.split('#')[0].rstrip()]
+                    DEM_list += [line.split('#')[0].rstrip()]
+    if problem_DEM_file is not None:
+        with open(problem_DEM_file,'r') as fh:
+            for line in fh:
+                # skip commented lines
+                if line[0] == '#':
+                    continue
+                DEM_list += [line.split('#')[0].rstrip()]
+    problem_DEMs=[]
+    for thefile in DEM_list:
+        try:
+            thefile=get_2m_filename(thefile)
+        except Exception:
+            continue
+        if thefile not in problem_DEMs:
+            problem_DEMs += [thefile]
     return problem_DEMs
 
 def apply_DEM_metadata(D, DEM_meta_config):
@@ -96,11 +120,20 @@ def apply_DEM_metadata(D, DEM_meta_config):
 def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=20.,
                   blockmedian_scale=100., N_target=None, subset_stack=False, year_offset=0.5,
                   DEM_dt_min=None,
-                  DEM_meta_config=None, DEM_res=32, DEBUG=False, target_area=None, time_range=None,
+                  read_basis_vectors=True,
+                  pgc_url_file=None,
+                  DEM_meta_config=None, DEM_res=32,
+                  problem_DEM_file=None,
+                  DEBUG=False, target_area=None, time_range=None,
                   include_xtrack=False, VERBOSE=True):
 
     if sensor_dict is None:
         sensor_dict={}
+
+    if problem_DEM_file is None and 'problem_DEM_file' in DEM_meta_config:
+        problem_DEM_file=DEM_meta_config('problem_DEM_file')
+
+    problem_DEMs = read_problem_DEM_file(gI_files, problem_DEM_file=problem_DEM_file)
 
     if not isinstance(gI_files, list):
         if os.path.isfile(gI_files):
@@ -111,9 +144,14 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
     D=[]
     for this_file in gI_files:
         try:
-            D += pc.geoIndex().from_file(this_file, read_file=False)\
+            temp = pc.geoIndex().from_file(this_file, read_file=False)\
                 .query_xy_box(xy0[0]+np.array([-W['x']/2, W['x']/2]), xy0[1]+np.array([-W['y']/2, W['y']/2]), \
                               fields=['x','y','z','sigma','time','sensor'])
+            for Di in temp:
+                if get_2m_filename(Di.filename) not in problem_DEMs:
+                    D += [Di]
+                elif VERBOSE:
+                    print(f"skipping problem DEM: {Di.filename}")
         except TypeError:
             if DEBUG:
                 print(f"No data found for file: {this_file}")
@@ -133,23 +171,24 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
                 (np.min(Di.time) > time_range[1])) ]
 
     if not include_xtrack:
-        print('before removing xtrack:'+str(len(D)))
+        if VERBOSE:
+            print('before removing xtrack:'+str(len(D)))
         xtrack_re=re.compile('_W(\d)W(\d)_')
         D = [ Di for Di in D if xtrack_re.search(Di.filename) is None ]
-        print('\t after::'+str(len(D)))
+        if VERBOSE:
+            print('\t after:'+str(len(D)))
     if target_area is None:
         target_area=W['x']*W['y']
 
     if D is None:
         return None, sensor_dict
+
     if len(sensor_dict) > 0:
         first_key_num=np.max([key for key in sensor_dict.keys()])+1
     else:
         first_key_num=0
     key_num=0
     temp_sensor_dict=dict()
-
-    problem_DEMs = read_problem_DEM_file(gI_files)
 
     if DEM_meta_config is None:
         DEM_meta_config={}
@@ -186,10 +225,7 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
     this_sensor_number=-1
     for key_num, Di in enumerate(D):
         this_filename = os.path.basename(Di.filename)
-        if this_filename in problem_DEMs:
-            if VERBOSE:
-                print(f"skipping problem DEM: {this_filename}")
-            continue
+
         meta, DEM_meta_config = apply_DEM_metadata(Di, DEM_meta_config)
         if 'skip' in meta and meta['skip']:
             continue
@@ -204,6 +240,11 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
         if 'sigma' not in Di.fields:
             Di.assign({'sigma':np.zeros_like(Di.x)+0.5})
         D_temp += [Di]
+
+        # get metadata
+        if read_basis_vectors:
+            meta=LS.get_pgc(Di.filename, pgc_url_file, targets=['meta'])['meta']
+            meta['xform'], meta['poly'] = get_DEM_ATC_xform(meta)
         meta['sensor'] = this_sensor_number
         meta['filename'] = Di.filename
         meta_list += [meta]
@@ -227,3 +268,44 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
         new_meta[count+first_key_num]['sensor'] = count+first_key_num
 
     return new_D, sensor_dict, new_meta
+
+def regen_DEM_meta(xy0, W, data, save_file, gI_files, read_basis_vectors=True,
+                   pgc_url_file=None, VERBOSE=False):
+
+    if not isinstance(gI_files, list):
+        if os.path.isfile(gI_files):
+            gI_files=[gI_files]
+        else:
+            gI_files=glob.glob(gI_files)
+    else:
+        gI_list=[]
+        for thepath in gI_files:
+            gI_list += glob.glob(thepath)
+        gI_files=gI_list
+    file_list=[]
+    for this_file in gI_files:
+        try:
+            file_list += pc.geoIndex().from_file(this_file, read_file=False)\
+                .query_xy_box(xy0[0]+np.array([-W['x']/2, W['x']/2]),
+                              xy0[1]+np.array([-W['y']/2, W['y']/2]), \
+                              get_data=False).keys()
+        except Exception:
+            if VERBOSE:
+                print(f"regen_DEM_meta : no DEMs fround for {this_file}")
+            pass
+    file_dict={os.path.basename(file):file for file in set(file_list)}
+
+    sensor_dict={}
+    with h5py.File(save_file,'r') as h5f:
+        for key, val in h5f['meta/sensors'].attrs.items():
+            thebase=os.path.basename(val)
+            this_sensor_number = int(key.replace('sensor_',''))
+            if 'SETSM' not in thebase:
+                continue
+            if read_basis_vectors:
+                meta=LS.get_pgc(file_dict[thebase], pgc_url_file, targets=['meta'])['meta']
+                meta['xform'], meta['poly'] = get_DEM_ATC_xform(meta)
+            meta['sensor'] = this_sensor_number
+            meta['filename'] = file_dict[thebase]
+            sensor_dict[this_sensor_number]  = meta
+    return sensor_dict

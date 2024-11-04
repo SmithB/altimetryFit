@@ -53,7 +53,8 @@ def fill_SMB_gaps(z, w_smooth):
     return z
 
 def SMB_corr_from_grid(data, model_file=None, time=None, var_mapping=None,
-                       w_smooth=1, rho_water=1, rho_ice=0.917, gridded=False, out_vars=None):
+                       w_smooth=1, rho_water=1, rho_ice=0.917,
+                       calc_FAC_anomaly=True, gridded=False, out_vars=None):
     """
     Interpolate a gridded SMB model to data points.
 
@@ -101,12 +102,24 @@ def SMB_corr_from_grid(data, model_file=None, time=None, var_mapping=None,
     with h5py.File(model_file,'r') as h5f:
         if 't' in h5f:
             delta_t=np.diff(np.array(h5f['t'][0:2]))
+            t01=h5f['t'][0:2]
         else:
             delta_t=np.diff(np.array(h5f['time'][0:2]))
+            t01=h5f['time'][0:2]
+
     # first, try to read a narrow range of data
     smbfd=pc.grid.data().from_file(model_file, bounds=[np.array(jj)+pad_f for jj in bounds],
                                    t_range=[t_range[0]-delta_t, t_range[1]+delta_t],
                                    field_mapping=var_mapping)
+    if calc_FAC_anomaly:
+        smbfd_0 = pc.grid.data().from_file(model_file, bounds=[np.array(jj)+pad_f for jj in bounds],
+                                       t_range=[t01[0]-delta_t, t01[1]+delta_t],
+                                       field_mapping=var_mapping)
+        if not np.all(np.isfinite(smbfd_0.FAC)):
+            for field in smbfd.fields:
+                setattr(smbfd_0, field, fill_SMB_gaps(getattr(smbfd_0, field), w_smooth))
+        smbfd_0=smbfd_0[:,:,0]
+
     if not(np.all(np.isfinite(smbfd.SMB_a))):
         # if there are NaNs in the SMB fields, fill the gaps with smooth extrapoation
         smbfd=pc.grid.data().from_nc(model_file, bounds=[np.array(jj)+pad_c for jj in bounds],
@@ -119,13 +132,15 @@ def SMB_corr_from_grid(data, model_file=None, time=None, var_mapping=None,
     for field in var_mapping:
         SMB_data[field]=smbfd.interp(data.x, data.y, t=time, field=field, gridded=gridded)
 
+    if calc_FAC_anomaly:
+        SMB_data['FAC'] -= smbfd_0.interp(data.x, data.y, field='FAC', gridded=gridded)
+
     if out_vars is not None:
         for var in out_vars:
             if var=='SMB_a' and hasattr(data, 'floating'):
                 data.assign(SMB_a= SMB_data['SMB_a']*(data.floating==0) + (rho_water-.917)/rho_water*(data.floating==1))
             else:
                 data.assign({var:SMB_data[var]})
-
 
     if 'floating' in data.fields and np.any(data.floating):
         float_scale = (data.floating==0) + (rho_water-.917)/rho_water*(data.floating==1)

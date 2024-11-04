@@ -52,7 +52,7 @@ def fill_SMB_gaps(z, w_smooth):
     return z
 
 
-def make_queue(args, defaults_file):
+def make_queue(args, defaults_files):
 
     if args.prelim:
         step='prelim'
@@ -69,8 +69,9 @@ def make_queue(args, defaults_file):
     if args.M2H_file is None:
         args.M2H_file=args.firn_directory+'/'+args.firn_grid_file
 
+    defaults_str = " ".join(defaults_files)
     for file in files:
-        thestr=f'make_SMB_for_tile.py --file {file} @{defaults_file} --time {args.time}'
+        thestr=f'make_SMB_for_tile.py --file {file} {defaults_str} --time {args.time}'
         for key in ['M2H_file', 'rho_water']:
             thestr += f' --{key} {getattr(args, key)}'
         for key in ['prelim', 'matched']:
@@ -106,18 +107,19 @@ def main():
     parser.add_argument('--prelim', action='store_true')
     parser.add_argument('--matched', action='store_true')
     parser.add_argument("--verbose",'-v', action="store_true")
+    parser.add_argument("--initial_FAC", action="store_true")
     parser.add_argument('--fields', type=str, nargs='+', default=['SMB_a','FAC'])
     parser.add_argument('--groups', type=str, nargs='+', default=['dz','z0'])
     parser.add_argument('--extrapolate_time','-e', action='store_true')
     args, _=parser.parse_known_args()
 
-
+    defaults_files=[]
     for arg in sys.argv:
         if arg[0]=='@':
-            defaults_file=arg[1:]
+            defaults_files += [arg]
 
     if args.make_queue:
-        make_queue(args, defaults_file)
+        make_queue(args, defaults_files)
         sys.exit(0)
     args.time=[*map(float, args.time.split(','))]
     args.grid_spacing=[*map(float, args.grid_spacing.split(','))]
@@ -170,6 +172,16 @@ def main():
         for field in args.fields:
             z0.assign({field : smbfd.interp(z0.x, z0.y, np.array(t0), field=field, gridded=True )})
 
+        if args.initial_FAC:
+            with h5py.File(args.M2H_file,'r') as h5f:
+                if 't' in h5f:
+                    t01=h5f['t'][0:2]
+                else:
+                    t01=h5f['time'][0:2]
+            FAC_0 = pc.grid.data().from_nc(args.M2h_file,
+                                           bounds=[np.array(jj)+pad_f for jj in bounds],
+                                           t_range=t01).interp(z0.x, z0.y, [t01], gridded=True)
+
     with h5py.File(args.file,'r+') as h5f:
         for field in args.fields:
             if 'dz' in args.groups:
@@ -184,6 +196,12 @@ def main():
                            chunks=True, compression="gzip", fillvalue=z0.fill_value)
                 else:
                     h5f['z0/'+field][...]=getattr(z0, field)
+        if args.initial_FAC:
+            if 'initial_FAC' not in h5f['z0']:
+                h5f.create_dataset('z0/initial_FAC', data=FAC_0,
+                       chunks=True, compression="gzip", fillvalue=z0.fill_value)
+            else:
+                h5f['z0/initial_FAC'][...]=FAC_0
 
 if __name__=='__main__':
     main()

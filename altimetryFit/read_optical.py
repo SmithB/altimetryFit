@@ -149,8 +149,10 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
               geoid_file=None, water_mask_threshold=None,
               mask_floating=False, time_range=None,
               dem_subset_TF=False, seg_diff_tol=4,
+              pgc_url_file=None,
               DEM_dt_min=None,
               DEM_sigma_corr=20,
+              problem_DEM_file=None,
               xy_bias_file=None):
     """
     Read laser-altimetry and DEM data from geoIndex files.
@@ -177,8 +179,9 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
         projection specification. The default is None.
     mask_file : str, optional
         mask file to use in filtering data location. The default is None.
-    DEM_file : str, optional
         DEM file to use in filtering data. The default is None.
+    DEM_file : str, optional
+        reference DEM against which DEM data will be tested based on DEM_tolerance
     geoid_file : str, optional
         geoid file to use in filtering data. The default is None.
     water_mask_threshold : float, optional
@@ -189,6 +192,8 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
         time range within which are accepted.  The default is None
     dem_subset_TF : bool, optional
         If true, DEM data are subsetted to provide one value per year. The default is False.
+    problem_DEM_file: str, optional
+        File listing DEMs that should be excluded from the analysis
     xy_bias_file: str, optional
         file from which to read xy biases for ICESat-2 data.
 
@@ -281,6 +286,8 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
                             N_target=N_target['DEM'],
                             DEM_dt_min=DEM_dt_min,
                             sigma_corr=DEM_sigma_corr,
+                            pgc_url_file=pgc_url_file,
+                            problem_DEM_file=problem_DEM_file,
                             subset_stack=dem_subset_TF, year_offset=year_offset)
         if D_DEM is not None:
             D += D_DEM
