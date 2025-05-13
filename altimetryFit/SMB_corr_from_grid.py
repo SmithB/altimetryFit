@@ -24,7 +24,7 @@ def smooth_corrected(z, w_smooth, set_NaN=True, mask=None, return_mask=False):
     zs=snd.gaussian_filter(ztemp, w_smooth, mode="constant", cval=0)
     zs[mask1>0]=zs[mask1>0]/mask1[mask1>0]
     if set_NaN:
-        zs[mask1==0]=np.NaN
+        zs[mask1==0]=np.nan
     if return_mask:
         return zs, mask
     else:
@@ -108,6 +108,7 @@ def SMB_corr_from_grid(data, model_file=None, time=None, var_mapping=None,
             t01=h5f['time'][0:2]
 
     # first, try to read a narrow range of data
+
     smbfd=pc.grid.data().from_file(model_file, bounds=[np.array(jj)+pad_f for jj in bounds],
                                    t_range=[t_range[0]-delta_t, t_range[1]+delta_t],
                                    field_mapping=var_mapping)
@@ -133,12 +134,15 @@ def SMB_corr_from_grid(data, model_file=None, time=None, var_mapping=None,
         SMB_data[field]=smbfd.interp(data.x, data.y, t=time, field=field, gridded=gridded)
 
     if calc_FAC_anomaly:
-        SMB_data['FAC'] -= smbfd_0.interp(data.x, data.y, field='FAC', gridded=gridded)
+        if gridded and SMB_data['FAC'].ndim > 2:
+            SMB_data['FAC'] -= smbfd_0.interp(data.x, data.y, field='FAC', gridded=gridded)[:,:,None]
+        else:
+            SMB_data['FAC'] -= smbfd_0.interp(data.x, data.y, field='FAC', gridded=gridded)
 
     if out_vars is not None:
         for var in out_vars:
             if var=='SMB_a' and hasattr(data, 'floating'):
-                data.assign(SMB_a= SMB_data['SMB_a']*(data.floating==0) + (rho_water-.917)/rho_water*(data.floating==1))
+                data.assign(SMB_a= SMB_data['SMB_a']*((data.floating==0) + (rho_water-.917)/rho_water*(data.floating==1)))
             else:
                 data.assign({var:SMB_data[var]})
 
