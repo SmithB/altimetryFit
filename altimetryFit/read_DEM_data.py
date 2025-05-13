@@ -127,6 +127,9 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
                   DEBUG=False, target_area=None, time_range=None,
                   include_xtrack=False, VERBOSE=True):
 
+    if DEM_meta_config is None:
+        DEM_meta_config={}
+
     if sensor_dict is None:
         sensor_dict={}
 
@@ -142,10 +145,12 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
             gI_files=glob.glob(gI_files)
 
     D=[]
+    W_padded={coor:np.maximum(W[coor], 1.e4) for coor in ['x','y']}
+
     for this_file in gI_files:
         try:
             temp = pc.geoIndex().from_file(this_file, read_file=False)\
-                .query_xy_box(xy0[0]+np.array([-W['x']/2, W['x']/2]), xy0[1]+np.array([-W['y']/2, W['y']/2]), \
+                .query_xy_box(xy0[0]+np.array([-W_padded['x']/2, W_padded['x']/2]), xy0[1]+np.array([-W_padded['y']/2, W_padded['y']/2]), \
                               fields=['x','y','z','sigma','time','sensor'])
             for Di in temp:
                 if get_2m_filename(Di.filename) not in problem_DEMs:
@@ -158,7 +163,7 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
     for Di in D:
         Di.crop([xy0[0]+np.array([-W['x']/2, W['x']/2]), xy0[1]+np.array([-W['y']/2, W['y']/2])])
 
-    DEM_res=np.NaN
+    DEM_res=np.nan
     for Di in D:
         DEM_res = np.nanmedian(np.diff(np.unique(Di.x)))
         if np.isfinite(DEM_res):
