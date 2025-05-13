@@ -10,12 +10,14 @@ import os
 import stat
 
 
-def make_fields(max_coarse=40000, compute_lags=False, compute_sigma=False, compute_SMB=False):
+def make_fields(max_coarse=40000, max_lag=1, compute_lags=False, \
+                compute_sigma=False, compute_SMB=False, hybrid=False):
 
     fields={}
     fields['z0']="z0 sigma_z0 misfit_rms misfit_scaled_rms mask cell_area count".split(' ')
+    if hybrid:
+        fields['lagrangian_dz']=["dz"]
 
-    
     fields['dz']="dz sigma_dz count misfit_rms misfit_scaled_rms mask cell_area".split(' ')
     if not compute_sigma:
         fields['z0']=[field for field in fields['z0'].copy() if 'sigma' not in field]
@@ -24,13 +26,17 @@ def make_fields(max_coarse=40000, compute_lags=False, compute_sigma=False, compu
     if compute_SMB:
         for ff in fields.values():
             ff += ['SMB_a','FAC']
-        
+
     if not compute_lags:
         return fields
 
-    lags=['_lag1', '_lag4', '_lag8']
-    for lag in lags:
-        fields['dzdt'+lag]=["dzdt"+lag, "sigma_dzdt"+lag]
+    lags=[]
+    for lag in [1]+list(np.arange(4, max_lag+1, 4)):
+        if lag > max_lag:
+            continue
+        this_lag=f'_lag{lag}'
+        lags += [this_lag]
+        fields['dzdt'+this_lag]=["dzdt"+this_lag, "sigma_dzdt"+this_lag]
 
     for res in ["_40000m", "_20000m", "_10000m"]:
         this_res = int(res.replace('_','').replace('m',''))
@@ -55,6 +61,7 @@ def make_tile_centers(region_dir, W):
 
     tile_files=[]
     for sub in ['prelim']:
+        print(os.path.join(region_dir, sub, 'E*N*.h5'))
         tile_files += glob.glob(os.path.join(region_dir, sub, 'E*N*.h5'))
 
     tile_re=re.compile('/E(.*)_N(.*).h5')
@@ -82,12 +89,16 @@ parser.add_argument('--width', type=float, help="output tile width", default=200
 parser.add_argument('--base_dir','-b', type=str, required=True)
 parser.add_argument('--calc_sigma', action='store_true')
 parser.add_argument('--calc_SMB', action='store_true')
+parser.add_argument('--max_res', type=float)
+parser.add_argument('--max_lag', type=int, default=1)
+parser.add_argument('--hybrid', action='store_true')
 parser.add_argument('--prelim', action='store_true')
 parser.add_argument('--tile_spacing', type=float, default=40000, help='distance between tile centers')
 parser.add_argument('--pad', type=float, default=1000)
 parser.add_argument('--region', type=str, default='GL')
 parser.add_argument('--out_dir', type=str)
 parser.add_argument('--environment','-e',  type=str)
+parser.add_argument('--pboss', action='store_true')
 parser.add_argument('--feather', type=float)
 args, _=parser.parse_known_args()
 
@@ -100,21 +111,38 @@ if args.feather is None:
     overlap=(args.tile_W-args.tile_spacing)/2
     args.feather=overlap-args.pad
 
-fields=make_fields(max_coarse=np.minimum(40000, args.tile_W), \
-                compute_lags=args.calc_sigma, \
+if args.max_res is None:
+    args.max_res = np.minimum(40000, args.tile_W)
+
+fields=make_fields(max_coarse=args.max_res, \
+                   max_lag=args.max_lag,\
+                   compute_lags=args.calc_sigma, \
                    compute_sigma=args.calc_sigma, \
-                   compute_SMB=args.calc_SMB)
+                   compute_SMB=args.calc_SMB,
+                   hybrid=args.hybrid)
 xyc=make_tile_centers(in_dir, args.width)
 
+tile_sub=f'{int(args.width/1000)}km_tiles'
+
 if args.out_dir is None:
-    tile_dir_out=os.path.join(in_dir,f'{int(args.width/1000)}km_tiles')
-else:
-    tile_dir_out=os.path.join(args.out_dir,f'{int(args.width/1000)}km_tiles')
+    args.out_dir=in_dir
+tile_dir_out=os.path.join(args.out_dir, tile_sub)
 if not os.path.isdir(tile_dir_out):
     os.mkdir(tile_dir_out)
 
-if not os.path.isdir(f'tile_run_{args.region}'):
-    os.mkdir(f'tile_run_{args.region}')
+if args.pboss:
+    run_dir='par_run'
+else:
+    run_dir=f'tile_run_{args.region}'
+queue_dir=run_dir+'/queue'
+
+if not os.path.isdir(run_dir):
+    os.mkdir(run_dir)
+
+
+for sub in ['queue','running','done','logs']:
+    if not os.path.isdir(os.path.join(run_dir, sub)):
+        os.mkdir(os.path.join(run_dir, sub))
 
 non_sigma_fields={}
 sigma_fields={}
@@ -129,7 +157,7 @@ for count, xy in enumerate(xyc):
     tile_bounds_1km = "_".join([str(int(ii/1000)) for ii in tile_bounds])
     tile_bounds_str = " ".join([str(ii) for ii in tile_bounds])
 
-    task_file=f'tile_run_{args.region}/task_{count+1}'
+    task_file=os.path.join(queue_dir, f'task_{count+1}')
     with open(task_file,'w') as fh:
         fh.write('#! /usr/bin/env bash\n')
         if args.environment is not None:
@@ -146,17 +174,17 @@ for count, xy in enumerate(xyc):
                     feather=0
                 if group_spacing > args.tile_W-(2*pad):
                     pad=0
+            out_sub=os.path.join(tile_sub, group)
             out_dir = os.path.join(tile_dir_out, group)
             if not os.path.isdir(out_dir):
                 os.mkdir(out_dir)
-            out_file = os.path.join(out_dir, f"{group}{tile_bounds_1km}.h5")
+            out_file = os.path.join(out_sub, f"{group}{tile_bounds_1km}.h5")
             fh.write("#\n")
             if args.prelim:
-                fh.write(f"make_mosaic.py -w -d {in_dir} -g 'prelim/E*.h5' -r {search_bounds_str} -f {feather} -p {pad} -c {tile_bounds_str} -G {group} -F {sigma_fields[group]+non_sigma_fields[group]} -O {out_file} {spacing_str}\n")
+                fh.write(f"make_mosaic.py -v -w -d {in_dir} -g 'prelim/E*.h5' -r {search_bounds_str} -f {feather} -p {pad} -c {tile_bounds_str} -G {group} -F {sigma_fields[group]+non_sigma_fields[group]} -O {out_file} {spacing_str}\n")
             else:
-                fh.write(f"make_mosaic.py -w -R -d {in_dir} -g 'matched/E*.h5' -r {search_bounds_str} -f {feather} -p {pad} -c {tile_bounds_str} -G {group} -F {non_sigma_fields[group]} -O {out_file} {spacing_str}\n")
+                fh.write(f"make_mosaic.py -v -w -R -d {in_dir} -g 'matched/E*.h5' -r {search_bounds_str} -f {feather} -p {pad} -c {tile_bounds_str} -G {group} -F {non_sigma_fields[group]} -O {out_file} {spacing_str}\n")
                 if args.calc_sigma:
                     fh.write(f"make_mosaic.py -w -d {in_dir} -g 'prelim/E*.h5' -r {search_bounds_str} -f {feather} -p {pad} -c {tile_bounds_str} -G {group} -F {sigma_fields[group]} -O {out_file} {spacing_str}\n")
     st=os.stat(task_file)
     os.chmod(task_file, st.st_mode | stat.S_IEXEC)
-
