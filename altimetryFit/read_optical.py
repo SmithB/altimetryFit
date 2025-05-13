@@ -17,7 +17,7 @@ from ATL11.calc_geoloc_bias import calc_geoloc_bias
 import glob
 
 def laser_key():
-    return {'ICESat1':1, 'ICESat2':2, 'ATM':3, 'LVIS':4, 'riegl':5}
+    return {'ICESat1':1, 'ICESat2':2, 'ATM':3, 'ATM_ICESSN':3.5, 'LVIS':4, 'riegl':5}
 
 def find_gI_files(gI_files):
 
@@ -70,14 +70,50 @@ def read_ICESat(xy0, W, gI_files, sensor=1, hemisphere=-1, DEM=None):
                   'slope_mag':slope_mag})
     return D0
 
+
+def read_ATM_ICESSN(xy0, W, gI_files, sensor=3.5, track_identifier=None):
+    fields=['x','y','z','time','sigma', 'track_identifier','south_to_north_slope','west_to_east_slope']
+
+    if isinstance(track_identifier, (int, float)):
+        track_identifier=np.array(track_identifier)
+
+    if W is not None:
+        dx=1.e4
+        bds={'x':np.r_[np.floor((xy0[0]-W['x']/2)/dx), np.ceil((xy0[0]+W['x']/2)/dx)]*dx, \
+                     'y':np.r_[np.floor((xy0[1]-W['y']/2)/dx), np.ceil((xy0[1]+W['y']/2)/dx)]*dx}
+        px, py=np.meshgrid(np.arange(bds['x'][0], bds['x'][1]+dx, dx),
+                           np.arange(bds['y'][0], bds['y'][1]+dx, dx))
+    else:
+        px=np.array([xy0[0]])
+        py=np.array([xy0[1]])
+
+    D0=[]
+    for file in gI_files:
+        temp = pc.geoIndex().from_file(file).query_xy((px.ravel(), py.ravel()), fields=fields)
+        if temp is not None:
+            for Di in temp:
+                Di.assign(sensor=np.zeros_like(Di.time)+sensor,
+                          slope_mag = np.sqrt(Di.south_to_north_slope**2+Di.west_to_east_slope**2),
+                          sigma_corr = 0.025 + np.zeros_like(Di.time))
+                Di.sigma=np.sqrt(Di.sigma**2 + 0.05**2 + (4*Di.slope_mag)**2)
+                if track_identifier is not None:
+                    by_track_id = np.in1d(Di.track_identifier, track_identifier)
+                    # in some ICESSN there are no nadir points- in these cases,
+                    # track 2 is the best option
+                    if not np.any(by_track_id) and np.all(track_identifier==0):
+                        by_track_id = np.in1d(Di.track_identifier, np.array([2]))
+                    Di.index(by_track_id)
+            D0 += temp
+    return D0
+
 def read_ATM(xy0, W, gI_files, sensor=3, blockmedian_scale=100.):
     fields=['x','y','z', 'time','bias_50m', 'noise_50m', 'N_50m','slope_x','slope_y']
     if W is not None:
         dx=1.e4
         bds={'x':np.r_[np.floor((xy0[0]-W['x']/2)/dx), np.ceil((xy0[0]+W['x']/2)/dx)]*dx, \
                      'y':np.r_[np.floor((xy0[1]-W['y']/2)/dx), np.ceil((xy0[1]+W['y']/2)/dx)]*dx}
-        px, py=np.meshgrid(np.arange(bds['x'][0], bds['x'][1], dx),
-                           np.arange(bds['y'][0], bds['y'][1], dx))
+        px, py=np.meshgrid(np.arange(bds['x'][0], bds['x'][1]+dx, dx),
+                           np.arange(bds['y'][0], bds['y'][1]+dx, dx))
     else:
         px=np.array([xy0[0]])
         py=np.array([xy0[1]])
@@ -209,7 +245,7 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
     """
     atc_shift_table=None
     laser_dict=laser_key()
-    sensor_dict={laser_dict[key]:key for key in ['ICESat1', 'ICESat2', 'ATM','LVIS','riegl']}
+    sensor_dict={laser_dict[key]:key for key in ['ICESat1', 'ICESat2', 'ATM', 'ATM_ICESSN', 'LVIS','riegl']}
     D=[]
     DEM=None
     if DEM_file is not None:
@@ -271,6 +307,12 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
                          , blockmedian_scale=bm_scale['laser'], sensor=laser_dict['ATM'])
         if D_ATM is not None:
             D += D_ATM
+    if 'ATM_ICESSN' in GI_files:
+        D_ATM = read_ATM_ICESSN(xy0, W, find_gI_files(GI_files['ATM_ICESSN']),
+                                track_identifier=0)
+        if D_ATM is not None:
+            D += D_ATM
+
     DEM_meta_dict=None
     if 'DEM' in GI_files:
         if hemisphere==1:
