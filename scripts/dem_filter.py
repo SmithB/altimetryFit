@@ -345,7 +345,7 @@ def filter_dem(*args, **kwargs):
         out_temp=np.zeros([len(out_bands), stride, stride])
 
         if np.all(mask.ravel()==0):
-            out_temp=out_temp+np.NaN
+            out_temp=out_temp+np.nan
             out_sub.z=out_temp
             out_sub.setBounds(out_sub.c0+pad, out_sub.r0+pad, out_sub.Nc-2*pad, out_sub.Nr-2*pad)
             out_sub.writeSubsetTo(out_bands, out_sub)
@@ -420,12 +420,12 @@ def filter_dem(*args, **kwargs):
             r2s, dummy=smooth_corrected(e2_geo+(zss-z)**2, mask, w_error)
             r2, dummy=smooth_corrected(r2, mask, w_error)
             error_est=np.sqrt(r2s+r2)
-            error_est[mask==0]=np.NaN
+            error_est[mask==0]=np.nan
             out_temp[1,:,:]=error_est[pad:-(pad), pad:-(pad)]
         else:
             out_temp[1,:,:]=e2_geo[pad:-pad, pad:-pad]
 
-        z[mask==0]=np.NaN
+        z[mask==0]=np.nan
         out_temp[0,:,:]=z[pad:-(pad), pad:-(pad)]
 
         out_sub.z=out_temp
@@ -440,7 +440,7 @@ def filter_dem(*args, **kwargs):
         #print('----')
     outDs.SetGeoTransform(tuple(xform_out))
     for b in out_bands:
-        outDs.GetRasterBand(b).SetNoDataValue(np.NaN)
+        outDs.GetRasterBand(b).SetNoDataValue(np.nan)
     outDs.SetProjection(in_ds.GetProjection())
     outDs=None
 
