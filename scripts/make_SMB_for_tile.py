@@ -23,7 +23,7 @@ def smooth_corrected(z, w_smooth, set_NaN=True, mask=None, return_mask=False):
     zs=snd.gaussian_filter(ztemp, w_smooth, mode="constant", cval=0)
     zs[mask1>0]=zs[mask1>0]/mask1[mask1>0]
     if set_NaN:
-        zs[mask1==0]=np.NaN
+        zs[mask1==0]=np.nan
     if return_mask:
         return zs, mask
     else:
