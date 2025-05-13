@@ -37,10 +37,10 @@ def histogram_peak_stats(x, ctr=None, x_max=None, sided=1):
     n_bins=int(np.ceil(2*np.sqrt(np.sum(x<=x_max))))
     N, edges = np.histogram(x[x<=x_max], n_bins)
     bin_ctrs=(edges[0:-1]+edges[1:])/2
-    
+
     if sided==1:
         ctr=0
-    
+
     if ctr is None:
         # first true bin
         i_ctr=np.argmax(N==np.max(N))
@@ -70,7 +70,7 @@ def two_model_stats(D,  DEM_file, dx=500, N_min=100, v_ratio_max = [0.01, 0.1]):
     DEM_file : str
         DEM file against which to compare D
     v_ratio_max : 2-element list, optional
-        ratio between plane misfit and DEM misfit.  labeled regions with ratio 
+        ratio between plane misfit and DEM misfit.  labeled regions with ratio
         less than this are assumed to match the plane. The default is [0.01, 0.1].
 
     Returns
@@ -108,12 +108,12 @@ def two_model_stats(D,  DEM_file, dx=500, N_min=100, v_ratio_max = [0.01, 0.1]):
         G=np.c_[np.ones(len(ii)), gx[ii]-xy0[0], gy[ii]-xy0[1]]
         m=np.linalg.solve(G.T.dot(G), G.T.dot(z[ii]))
         r_plane=z[ii]-G.dot(m)
-        
+
         m_REF = np.linalg.solve(G.T.dot(G), G.T.dot(dz[ii]))
         r_REF = dz[ii]-G.dot(m_REF)
         #m_REF = np.mean(r_REF)
         #r_REF -= m_REF
-        
+
         label_stats[this_label]= {
             'rms0':np.sqrt(np.mean(z[ii]**2)),
             'bar0':np.mean(z[ii]),
@@ -139,13 +139,13 @@ def two_model_stats(D,  DEM_file, dx=500, N_min=100, v_ratio_max = [0.01, 0.1]):
             l_stats[field]+= [li[field]]
     for field in l_stats.keys():
         l_stats[field]=np.array(l_stats[field])
-    
+
     return l_stats, label_dict, xy0
 
 def select_slope_mask_by_large_scale_fit(LS2, xy0, VERBOSE=False):
     """
     Identify regions that have a consistent slope and mask them.
-    
+
     Parameters
     ----------
     LS2 : dict
@@ -171,27 +171,27 @@ def select_slope_mask_by_large_scale_fit(LS2, xy0, VERBOSE=False):
     # initial guess of deviant fits
     ctr, whm_rms_dz= histogram_peak_stats(LS2['rms_dz'], sided=2)
     dz_bar = np.median(LS2['dz_REF'][LS2['rms_dz'] < ctr+3*whm_rms_dz])
-    
+
     # recalculate rms_dz after shift for mean non-outlier offset
     rms_dz = np.sqrt((LS2['dz_REF']-dz_bar)**2 + LS2['sigma_dz']**2)
     if VERBOSE:
         print(f"dz_bar={dz_bar:2.3f}, p84_dz_ref={sps.scoreatpercentile(LS2['rms_dz'], 84)}, p84_dz_ref_corr={sps.scoreatpercentile(rms_dz, 84)}")
-   
+
     ctr, whm_rms_dz= histogram_peak_stats(rms_dz, sided=2)
     outlier_rms_dz = np.maximum(10, ctr+3*whm_rms_dz)
-    
+
     G=np.c_[np.ones_like(LS2['label'][:,0]), LS2['label'][:,0]-xy0[0], LS2['label'][:,1]-xy0[1]]
     these =  (LS2['sigma_plane']< 2)
     these &= (rms_dz > outlier_rms_dz)
-    
+
     if VERBOSE:
         print(f"\twhm_rms_dz={whm_rms_dz}, n_outliers={these.sum()}")
-        
+
     if np.sum(these) < N_min:
         if VERBOSE:
             print("\treturning because there are not enough outlier points.")
         return None, None, None, None
-    
+
     for count in range(2):
         G1=G[these,:]
         # fit the pixel center elevation with a plane:
@@ -206,7 +206,7 @@ def select_slope_mask_by_large_scale_fit(LS2, xy0, VERBOSE=False):
             return None, None, None, None
     slope_ctr = [np.median(LS2['dzdx_plane'][these]), np.median(LS2['dzdy_plane'][these])]
     slope_sigma = [pc.RDE(LS2['dzdx_plane'][these]), pc.RDE(LS2['dzdy_plane'][these])]
-    
+
     # reject if the plane fit slope is not inside the tolerance selected slope points
     if (m[1] < slope_ctr[0] - 3*slope_sigma[0]) | (m[1]>slope_ctr[0] + 3*slope_sigma[0]) \
         or (m[2] < slope_ctr[1] - 3*slope_sigma[1]) | (m[2]>slope_ctr[1] + 3*slope_sigma[1]):
@@ -214,7 +214,7 @@ def select_slope_mask_by_large_scale_fit(LS2, xy0, VERBOSE=False):
             print("returning because the plane slope does not match the slopes of the facets")
             print([m, slope_ctr, slope_sigma])
         return None, None, None, None
-    
+
     # reject if the selected slopes include zero
     if (0 > slope_ctr[0] - 3*slope_sigma[0]) & (0 < slope_ctr[0] + 3*slope_sigma[0]) \
         and (0 > slope_ctr[1] - 3*slope_sigma[1]) & (0 < slope_ctr[1] + 3*slope_sigma[1]):
@@ -222,7 +222,7 @@ def select_slope_mask_by_large_scale_fit(LS2, xy0, VERBOSE=False):
             print("returning because the slope tolerances overlap zero")
             print([m, slope_ctr, slope_sigma])
         return None, None, None, None
-    
+
     LS2['DEM_vs_slope_mask']=(np.abs(r)< np.maximum(10, 3*sigma_hat))\
         & (LS2['sigma_plane'] < 2) \
         & (np.abs(LS2['dzdx_plane']-slope_ctr[0]) < 3*slope_sigma[0]) \
@@ -251,7 +251,7 @@ def map_stats(D, l_stats, label_dict, val):
         grid object whose z value contains the mapped field
 
     """
-    temp=pc.grid.data().from_dict({'x':D.x, 'y':D.y,'z':np.zeros([len(D.y), len(D.x)])+np.NaN})
+    temp=pc.grid.data().from_dict({'x':D.x, 'y':D.y,'z':np.zeros([len(D.y), len(D.x)])+np.nan})
     #temp.z=temp.z.ravel()
     for ii, ll in enumerate(l_stats['label']):
         jj = label_dict[tuple(ll)]
@@ -281,11 +281,11 @@ def main(argv):
     parser.add_argument('--EPSG', type=int, default=3413, help='output grid file EPSG')
     parser.add_argument('--dx', type=float, default=500, help='resolution at which to test the DEM')
     args=parser.parse_args()
-    
+
     D=pc.grid.data().from_geotif(args.dem_file)
     if len(D.z.shape) > 2:
         D.z=D.z[:,:,0]
-    
+
     if args.out_file is None:
         args.out_file=args.dem_file.replace('.tif','_plane_mask.tif')
     if args.dem_file==args.out_file:
@@ -297,26 +297,26 @@ def main(argv):
     gx=gx.ravel()
     gy=gy.ravel()
     D.assign({'label': np.round((gx+1j*gy)/args.dx)*args.dx})
-    
+
     LS2, label_dict, xy0 = two_model_stats(D,  args.ref_dem_file)
-    
+
     if LS2 is None:
         print("mask_DEM_plane_artifacts.py: did not find enough data, returning")
         print("\t file="+args.dem_file)
         return
 
     m, r, slope_centroid, slope_sigma = select_slope_mask_by_large_scale_fit(LS2, xy0, VERBOSE=True)
-    
+
     if slope_centroid is None:
         return
 
     mask = map_stats(D, LS2, label_dict, LS2['DEM_vs_slope_mask'])
     temp=np.zeros(mask.shape, dtype=bool)
-    
+
     # mask marks the points that should be rejected
     temp[mask.z==1] = 1
     mask.z=temp
-    
+
     Nk=np.ceil(args.dx/(D.x[1]-D.x[0]))
     kx, ky = np.meshgrid(np.arange(-Nk, Nk+0.1), np.arange(-Nk, Nk+1))
     K = (kx**2+ky**2) <= Nk**2
@@ -324,7 +324,7 @@ def main(argv):
 
 
     mask.to_geotif(args.out_file, srs_epsg=args.EPSG)
-    
+
     print(f"mask_DEM_plane_artifacts: file={args.dem_file}, N={np.sum(mask.z)},  slope_x={slope_centroid[0]}, slopey={slope_centroid[1]}, sigma_sx={slope_sigma[0]}, slope_sy={slope_sigma[1]}")
     return
 
