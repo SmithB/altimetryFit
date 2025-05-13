@@ -19,7 +19,7 @@ def remove_overlapping_DEM_data(Ds, bounds, res, dt_min=0.125):
     full_grid = pc.grid.data().from_dict(
         {'x':xx,
         'y':yy,
-        'z':np.zeros((len(yy), len(xx)))+np.NaN})
+        'z':np.zeros((len(yy), len(xx)))+np.nan})
 
     print(full_grid.shape)
     while masking_changed:

@@ -30,7 +30,7 @@ def segDifferenceFilter(D6, tol=2, setValid=True, toNaN=False, subset=False):
     if setValid:
         D6.valid=D6.valid & mask
     if toNaN:
-        D6.h_li[mask==0]=np.NaN
+        D6.h_li[mask==0]=np.nan
     if subset:
         D6.index(np.any(mask==1, axis=1))
 
@@ -141,8 +141,8 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
                 (D.n_fit_photons[cplx_data]/D.w_surface_window_final[cplx_data] < 5)
             valid[cplx_data] |= segDifferenceFilter(D, setValid=False, toNaN=False, tol=2*seg_diff_tol)[cplx_data]
 
-        D.z[valid==0] = np.NaN
-        D.z[D.quality==1] = np.NaN
+        D.z[valid==0] = np.nan
+        D.z[D.quality==1] = np.nan
         #D.index(np.isfinite(D.z))
         if blockmedian_scale is not None:
             if blockmedian_scale is not None:
@@ -164,8 +164,8 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
             dhdy_med=np.nanmedian(D.dh_fit_dy)
             dhdx_med=np.nanmedian(D.dh_fit_dx)
         else:
-            dhdy_med=np.NaN
-            dhdx_med=np.NaN
+            dhdy_med=np.nan
+            dhdx_med=np.nan
         sigma_geo_x=8
         sigma_corr[ind]=np.sqrt(0.03**2+sigma_geo_x**2*(dhdx_med**2+dhdy_med**2))
         if ~np.isfinite(sigma_corr[ind]):

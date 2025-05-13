@@ -337,9 +337,9 @@ def fit_OIB(xy0, Wxy=4e4, \
             if Di is None:
                 continue
             if 'rgt' not in Di.fields:
-                Di.assign({'rgt':np.zeros_like(Di.x)+np.NaN})
+                Di.assign({'rgt':np.zeros_like(Di.x)+np.nan})
             if 'cycle' not in Di.fields:
-                Di.assign({'cycle':np.zeros_like(Di.x)+np.NaN})
+                Di.assign({'cycle':np.zeros_like(Di.x)+np.nan})
         data=pc.data(fields=['x','y','z','time','sigma','sigma_corr','slope_mag', 'sensor','rgt','cycle']).from_list(D)
         data.assign({'day':np.floor(data.time*365.25)})
         if extra_error is not None:

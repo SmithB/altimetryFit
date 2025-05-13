@@ -119,7 +119,7 @@ def est_along_track_jitter(filename, url_list_file=None, expected_rms_grad=1.e-5
     if np.any(data_count_AT > 100):
         sigma_bias = np.nanstd(m[:-3][data_count_AT > 100])
     else:
-        sigma_bias = np.NaN
+        sigma_bias = np.nan
 
     return  {'R0' : pc.RDE(D.r0[valid_data]),
              'poly' : poly,
