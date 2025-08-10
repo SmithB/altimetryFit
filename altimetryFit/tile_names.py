@@ -34,7 +34,7 @@ def tile_centers_from_files(files, out_format='numpy'):
     tile_re=re.compile('E(.*)_N(.*).h5')
     xy_tile={}
     for file in files:
-        thekey =tuple(1000*np.array([*map(int, tile_re.search(os.path.basename(file)).groups())]))
+        thekey =tuple(1000*np.array([*map(float, tile_re.search(os.path.basename(file)).groups())]))
         xy_tile[thekey] = file
 
     if out_format=='numpy':
@@ -56,7 +56,7 @@ def tile_centers_from_scripts(files, out_format='numpy'):
                 mm = xy_re.search(line)
                 if mm is None:
                     continue
-                key=tuple([*map(int, mm.groups())])
+                key=tuple([*map(float, mm.groups())])
                 xy_tile[key] = [file, line]
     if out_format=='numpy':
         xy_tile=np.c_[list(xy_tile.keys())]
