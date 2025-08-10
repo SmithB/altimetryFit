@@ -70,7 +70,7 @@ def set_memory_limit(max_bytes):
     resource.setrlimit(resource.RLIMIT_AS, (max_bytes, hard))
 
 
-def make_sensor_dict(h5_file):
+def make_sensor_dict(h5_file, data=None):
     '''
     Make a dictionary matching sensor number to bias id and source.
 
@@ -85,6 +85,8 @@ def make_sensor_dict(h5_file):
         sensor_re=re.compile(r'sensor_(\d+)')
         for sensor_key, sensor in h5f['/meta/sensors/'].attrs.items():
             sensor_num=int(sensor_re.search(sensor_key).group(1))
+            if data is not None and not np.in1d(sensor_num, data.sensor):
+                continue
             this_sensor_dict[sensor_num]=sensor
     return this_sensor_dict
 
@@ -533,6 +535,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
             out_name=None, \
             bias_nsigma_edit=None, \
             bias_nsigma_iteration=3,\
+            prior_edge_args=None,\
             replace=False, \
             DOPLOT=False, \
             spring_only=False, \
@@ -556,6 +559,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
             bm_scale=None,
             N_target=None,\
             calc_error_file=None, \
+            calc_error=False,\
             extra_error=None,\
             repeat_res=None,\
             tide_mask_file=None,\
@@ -590,7 +594,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
 
     SRS_proj4=get_SRS_proj4(hemisphere)
     bias_model_args={}
-    compute_E=False
+
     # set defaults for E_RMS, then update with input parameters
     E_RMS0={'d2z0_dx2':200000./3000/3000, 'd3z_dx2dt':3000./3000/3000, 'd2z_dxdt':3000/3000, 'd2z_dt2':5000}
     E_RMS0.update(E_RMS)
@@ -611,7 +615,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
 
     if calc_error_file is not None:
         reread_file=calc_error_file
-        compute_E=True
+        calc_error=True
         max_iterations=0
         repeat_res=None
 
@@ -677,10 +681,13 @@ def fit_altimetry(xy0=None, Width=4e4, \
         sensor_dict={}
     elif reread_file is not None:
         # get xy0 from the filename
-        re_match=re.compile('/E(.*)_N(.*).h5').search(reread_file)
-        xy0=[float(re_match.group(ii))*1000 for ii in [1, 2]]
+        #re_match=re.compile('/E(.*)_N(.*).h5').search(reread_file)
+        #xy0=[float(re_match.group(ii))*1000 for ii in [1, 2]]
+        xy0=[ctr['x'], ctr['y']]
         data=pc.data().from_h5(reread_file, group='data')
-        sensor_dict=make_sensor_dict(reread_file)
+        #TEST: crop the data in case we're rereading subsets
+        data.crop((xy0[0]+np.array([-1, 1])*W['x']/2, xy0[1]+np.array([-1, 1])*W['y']/2))
+        sensor_dict=make_sensor_dict(reread_file, data)
         DEM_meta_dict = regen_DEM_meta(xy0, W, data, reread_file, GI_files['DEM'],
                         read_basis_vectors=True,
                         pgc_url_file = DEM_grid_bias_params['jitter_url_list_file'])
@@ -735,6 +742,10 @@ def fit_altimetry(xy0=None, Width=4e4, \
         data=pc.data(fields=['x','y','z','time','sigma','sigma_corr',
                              'slope_mag', 'sensor','spot', 'rgt','cycle','BP']).from_list(D)
         data.assign({'day':np.floor(data.time*365.25)})
+
+        if data.size==0:
+            print("No data found, returning")
+            return None, None, None
 
         # apply the tides if a directory has been provided
         if tide_mask_file is not None:
@@ -866,12 +877,13 @@ def fit_altimetry(xy0=None, Width=4e4, \
         data.z -= data.z_ref
         E_RMS0['z0'] = reference_DEM_uncertainty
     # run the fit
-    print("="*50)
-    print("about to run smooth_fit with bias params="+str(bias_params))
+    if verbose:
+        print("="*50)
+        print("about to run smooth_fit with bias params="+str(bias_params))
     S=smooth_fit(data=data, ctr=ctr, W=W, spacing=spacing, E_RMS=E_RMS0,
                      return_fit_objects=return_fit_objects,
                      reference_epoch=reference_epoch,
-                     compute_E=compute_E,
+                     compute_E=calc_error,
                      bias_params=bias_params,
                      repeat_res=repeat_res,
                      max_iterations=max_iterations,
@@ -882,6 +894,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
                      mask_data=mask_data,\
                      sigma_extra_relax=sigma_extra_relax,\
                      constraint_scaling_maps=constraint_scaling_maps,\
+                     prior_edge_args=prior_edge_args,\
                      dzdt_lags=dzdt_lags,\
                      bias_model_args = bias_model_args, \
                      bias_nsigma_edit=bias_nsigma_edit, \
@@ -925,8 +938,10 @@ def parse_inputs(argv):
     parser.add_argument('--GeoIndex_source_file', type=path, help='json file containing locations for geoIndex files')
     parser.add_argument('--reread_file', type=str, help='reread data from this file')
     parser.add_argument('--out_name', '-o', type=path, help="output file name")
+    parser.add_argument('--tile_spacing', type=float, help="spacing between adjacent tile centers")
     parser.add_argument('--dzdt_lags', type=str, default='1,2,4', help='lags for which to calculate dz/dt, comma-separated list, no spaces')
     parser.add_argument('--prelim', action="store_true")
+    parser.add_argument('--matched', action="store_true")
     parser.add_argument('--E_d2zdt2', type=float, default=5000)
     parser.add_argument('--E_d2z0dx2', type=float, default=0.02)
     parser.add_argument('--E_d3zdx2dt', type=float, default=0.0003)
@@ -936,6 +951,8 @@ def parse_inputs(argv):
     parser.add_argument('--constraint_scaling_files', type=str, help='specify comma-separated list with component:file for each, no spaces')
     parser.add_argument('--max_iterations', type=int, default=8)
     parser.add_argument('--sigma_extra_relax', action='store_true', help='if set, the data errors will be relaxed by the calculated sigma_extra on the last iteration')
+    parser.add_argument('--prior_edge_include', type=float, help="distance from tile edge over which adjacent tiles can constrain the fit")
+    parser.add_argument('--prior_sigma_scale', type=float, default=1., help="error estimates in adjacent tiles will be scaled by this factor")
     parser.add_argument('--param_files', type=str, help='comma-separated list of parameter files, of form name1:file1,name2:file2')
     parser.add_argument('--xy_bias_file', type=str, help="CSV file containing fields delta_time, x_bias, and y_bias")
     parser.add_argument('--reference_DEM_file', type=str, help='DEM that will be subtracted from data before fitting')
@@ -992,6 +1009,7 @@ def parse_inputs(argv):
     parser.add_argument('--avg_mask_directory', type=path)
     parser.add_argument('--calc_error_file','-c', type=path)
     parser.add_argument('--calc_error_for_xy', action='store_true')
+    parser.add_argument('--calc_error', action='store_true')
     parser.add_argument('--avg_scales', type=str, help='scales at which to report average errors, comma-separated list, no spaces')
     parser.add_argument('--error_res_scale','-s', type=float, nargs=2, default=[4, 2], help='if the errors are being calculated (see calc_error_file), scale the grid resolution in x and y to be coarser')
     parser.add_argument('--converge_tol_frac', type=float, default=0.005, help='if the fractional change between two smooth_fit iterations is less than this value, the iteration has converged')
@@ -1028,16 +1046,31 @@ def parse_inputs(argv):
     else:
         args.calc_FAC_anomaly=True
 
+    prior_dirs=None
+    if args.matched:
+        prior_dirs = [os.path.join(args.base_directory,'prelim')]
+        args.max_iterations = 1
+
+    args.prior_edge_args=None
+    if args.prior_edge_include is not None:
+        args.prior_edge_args={'prior_dir': prior_dirs,
+                         'edge_include' : args.prior_edge_include,
+                         'sigma_scale' : args.prior_sigma_scale,
+                         'tile_spacing': args.tile_spacing}
+
     args.reread_dirs=None
     if args.out_name is not None:
         dest_dir = os.path.dirname(args.out_name)
     elif args.prelim:
         dest_dir = args.base_directory+'/prelim'
+    elif args.matched:
+        dest_dir = args.base_directory+'/matched'
 
     in_file=None
     if args.calc_error_file is not None:
         args.reread_file = args.calc_error_file
-        args.out_name=args.calc_error_file
+        if args.out_name is None:
+            args.out_name=args.calc_error_file
         in_file=args.calc_error_file
         dest_dir=os.path.dirname(args.reread_file)
 
@@ -1046,8 +1079,9 @@ def parse_inputs(argv):
         in_file=args.reread_file
 
     if in_file is not None:
-        re_match=re.compile('E(.*)_N(.*).h5').search(os.path.basename(in_file))
-        args.xy0=[float(re_match.group(ii))*1000 for ii in [1, 2]]
+        if args.xy0 is None:
+            re_match=re.compile('E(.*)_N(.*).h5').search(os.path.basename(in_file))
+            args.xy0=[float(re_match.group(ii))*1000 for ii in [1, 2]]
 
     if args.out_name is None:
         args.out_name=dest_dir + '/E%d_N%d.h5' % (args.xy0[0]/1e3, args.xy0[1]/1e3)
@@ -1059,7 +1093,7 @@ def parse_inputs(argv):
             return 1
 
     if args.error_res_scale is not None:
-        if args.calc_error_file is not None:
+        if args.calc_error_file is not None or  args.calc_error:
             for ii, key in enumerate(['z0','dz']):
                 args.spacing[key] *= args.error_res_scale[ii]
 
@@ -1153,12 +1187,14 @@ def main(argv):
             reread_file=args.reread_file,\
             calc_error_file=args.calc_error_file,\
             error_res_scale=args.error_res_scale,\
+            calc_error=args.calc_error,\
             converge_tol_frac=args.converge_tol_frac,\
             max_iterations=args.max_iterations, \
             sigma_extra_relax=args.sigma_extra_relax, \
             bias_nsigma_edit=args.bias_nsigma_edit,
             bias_nsigma_iteration=args.bias_nsigma_iteration,\
             bias_params=args.bias_params,\
+            prior_edge_args=args.prior_edge_args,\
             params=args.params,\
             reference_DEM_file=args.reference_DEM_file,\
             reference_DEM_offset=args.reference_DEM_offset,\
@@ -1207,12 +1243,16 @@ def main(argv):
     if S is None:
         return
 
-    if args.calc_error_file is None:
+    if args.calc_error_file is None and not args.calc_error:
         if 'm' in S and len(S['m']) > 0:
             save_fit_to_file(S, args.out_name, sensor_dict=sensor_dict,\
                              dzdt_lags=S['dzdt_lags'], \
                              reference_epoch=args.reference_epoch)
     else:
+        if 'sigma_z0' not in S['E']:
+            print("fit_altimetr.py: no sigma_z0 calculated, returning")
+            return
+
         S['E']['sigma_z0']=interp_ds(S['E']['sigma_z0'], args.error_res_scale[0])
         for field in S['E'].keys():
             if 'sigma_dz' in field: # ['sigma_dz', 'sigma_dzdt_lag1', 'sigma_dzdt_lag2', 'sigma_dzdt_lag4']:
