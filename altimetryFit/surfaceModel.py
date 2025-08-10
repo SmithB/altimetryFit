@@ -103,7 +103,7 @@ class surfaceModel(pc.grid.data):
                 pass
         return self
 
-    def from_h5_directory(self, directory, bounds=None, match_extent=False):
+    def from_h5_directory(self, directory, bounds=None, match_extent=False, VERBOSE=False):
         """
         Read a model from a directory
 
@@ -139,9 +139,15 @@ class surfaceModel(pc.grid.data):
                     mask[mask==0] = np.nan
                     for field in ['z0','dz']:
                         if field in temp.fields:
-                            setattr(temp, field, getattr(temp, field) * mask)
+                            if mask.ndim == getattr(temp, field).ndim:
+                                setattr(temp, field, getattr(temp, field) * mask)
+                            else:
+                                setattr(temp, field, getattr(temp, field) * mask[:,:,None])
                 setattr(self, '_'+group, temp)
-            except:
+            except Exception as e:
+                if VERBOSE:
+                    print(f"surfaceModel.py: problem reading {this_file}")
+                    print(e)
                 pass
 
         return self
@@ -233,6 +239,8 @@ class surfaceModel(pc.grid.data):
         squeeze = np.isscalar(self.t)
         if squeeze:
             t=[self.t]
+        else:
+            t=self.t
         if self.shelf:
             dz = self._dz.interp(self.x0, self.y0, t, field='dz')
         else:
@@ -277,6 +285,8 @@ class surfaceModel(pc.grid.data):
         squeeze = np.isscalar(self.t)
         if squeeze:
             t=[self.t]
+        else:
+            t=self.t
 
         SMB = pc.grid.data().from_file(self.SMB_file, bounds=self.bounds(pad=5.e4),
                                            t_range=[np.min(self.t)-0.5, np.max(self.t)+0.5],
@@ -295,6 +305,7 @@ class surfaceModel(pc.grid.data):
             float_scale = np.ones(SMB_a.shape)
 
         if squeeze:
+            print(self)
             self.assign(z_ice = self.z + np.squeeze(SMB_a*float_scale))
         else:
             self.assign(z_ice=self.z + SMB_a*float_scale)
@@ -318,11 +329,11 @@ class surfaceModel(pc.grid.data):
         temp=pc.grid.data().from_file(self.SMB_file, meta_only=True)
         t0 = temp.t[0]
         dt = temp.t[1]-temp.t[0]
-        t_range =[t[0]-dt, t[-1]+dt]
+        t_range =[t[0]-2*dt, t[-1]+2*dt]
 
         FAC=pc.grid.data().from_file(self.SMB_file, bounds=self.bounds(pad=5.e4), t_range=t_range, fields=['FAC'])
         if calc_FAC_anomaly:
-            FAC0 =pc.grid.data().from_file(self.SMB_file, bounds=self.bounds(pad=5.e4), t_range=[t0, t0+dt], fields=['FAC'])
+            FAC0 =pc.grid.data().from_file(self.SMB_file, bounds=self.bounds(pad=5.e4), t_range=[t0-dt, t0+dt], fields=['FAC'])
             FAC.FAC -= FAC0.FAC
         FAC.FAC=pc.grid.fill_edges(FAC.FAC)
         FAC_i = FAC.interp(self.x, self.y, t, field='FAC', gridded=True)
@@ -331,3 +342,30 @@ class surfaceModel(pc.grid.data):
         else:
             self.assign(z_surf = self.z_ice + FAC_i)
         return self
+
+    def _get_dz_ice(self, rho_water=1020):
+
+
+        if 'dz' not in self.fields:
+            self.get_dz()
+        t_range = [self._dz.t[0]-0.1, self._dz.t[-1]+0.1]
+        SMB=pc.grid.data().from_file(self.SMB_file,
+                            bounds=self.bounds(pad=5.e4),
+                            t_range=t_range,
+                            fields=['SMB_a'])
+        SMB.SMB_a = pc.grid.fill_edges(SMB.SMB_a)
+        if 'floating' not in self.fields:
+            if self.floating_mask_file is not None:
+                self.assign(
+                    floating = np.abs(
+                        pc.grid.data().from_file(self.floating_mask_file, bounds=self.bounds(pad=1.e3))\
+                            .interp(self.x, self.y,gridded=True)
+                        - self.floating_mask_value) < 0.01 )
+        if 'floating' in self.fields:
+            floating = self.interp(self._dz.x, self._dz.y, gridded=True) > 0.5
+            float_scale = ((floating==0) + (1-rho_water)/rho_water*(floating==1))[:,:,None]
+        else:
+            float_scale = 1
+
+        self._dz.assign(SMB_a = float_scale*SMB.interp(self._dz.x, self._dz.y, self._dz.t, gridded=True, field='SMB_a'))
+        self._dz.assign(dz_ice = self._dz.dz + self._dz.SMB_a)
