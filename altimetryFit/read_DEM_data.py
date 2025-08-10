@@ -289,10 +289,11 @@ def regen_DEM_meta(xy0, W, data, save_file, gI_files, read_basis_vectors=True,
         gI_files=gI_list
     file_list=[]
     for this_file in gI_files:
+        pad =np.array([-W['x']/2-5.e4, W['x']/2+5.e4])
         try:
             file_list += pc.geoIndex().from_file(this_file, read_file=False)\
-                .query_xy_box(xy0[0]+np.array([-W['x']/2, W['x']/2]),
-                              xy0[1]+np.array([-W['y']/2, W['y']/2]), \
+                .query_xy_box(xy0[0]+pad,
+                              xy0[1]+pad, \
                               get_data=False).keys()
         except Exception:
             if VERBOSE:
@@ -304,6 +305,9 @@ def regen_DEM_meta(xy0, W, data, save_file, gI_files, read_basis_vectors=True,
     with h5py.File(save_file,'r') as h5f:
         for key, val in h5f['meta/sensors'].attrs.items():
             thebase=os.path.basename(val)
+            #TEST: when rereading tile subsets, not every DEM will be in the file list
+            if thebase not in file_dict:
+                continue
             this_sensor_number = int(key.replace('sensor_',''))
             if 'SETSM' not in thebase:
                 continue
