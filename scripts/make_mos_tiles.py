@@ -39,6 +39,8 @@ def make_fields(max_coarse=40000, max_lag=1, compute_lags=False, \
         fields['dzdt'+this_lag]=["dzdt"+this_lag, "sigma_dzdt"+this_lag]
 
     for res in ["_40000m", "_20000m", "_10000m"]:
+        if max_coarse is None:
+            continue
         this_res = int(res.replace('_','').replace('m',''))
         if this_res > max_coarse:
             continue
@@ -89,10 +91,12 @@ parser.add_argument('--width', type=float, help="output tile width", default=200
 parser.add_argument('--base_dir','-b', type=str, required=True)
 parser.add_argument('--calc_sigma', action='store_true')
 parser.add_argument('--calc_SMB', action='store_true')
+parser.add_argument('--calc_averages', action='store_true')
 parser.add_argument('--max_res', type=float)
 parser.add_argument('--max_lag', type=int, default=1)
 parser.add_argument('--hybrid', action='store_true')
 parser.add_argument('--prelim', action='store_true')
+parser.add_argument('--matched', action='store_true')
 parser.add_argument('--tile_spacing', type=float, default=40000, help='distance between tile centers')
 parser.add_argument('--pad', type=float, default=1000)
 parser.add_argument('--region', type=str, default='GL')
@@ -106,12 +110,15 @@ out_W=args.width
 tile_re = re.compile('E(.*)_N(.*).h5')
 in_dir=args.base_dir
 
+if not (args.prelim or args.matched):
+    raise ValueError("Need to specify either prelim or matched argument")
+
 if args.feather is None:
     # amount by which each tile overlaps its neighbors
     overlap=(args.tile_W-args.tile_spacing)/2
     args.feather=overlap-args.pad
 
-if args.max_res is None:
+if args.calc_averages and args.max_res is None:
     args.max_res = np.minimum(40000, args.tile_W)
 
 fields=make_fields(max_coarse=args.max_res, \
@@ -164,6 +171,8 @@ for count, xy in enumerate(xyc):
             fh.write(f'source activate {args.environment}\n')
         for group in fields.keys():
             group_spacing=re.compile('(\d+)m').search(group)
+            if group_spacing is not None:
+                group_spacing=group_spacing.group(1)
             pad=args.pad
             feather=args.feather
             spacing_str=""
@@ -182,7 +191,7 @@ for count, xy in enumerate(xyc):
             fh.write("#\n")
             if args.prelim:
                 fh.write(f"make_mosaic.py -v -w -d {in_dir} -g 'prelim/E*.h5' -r {search_bounds_str} -f {feather} -p {pad} -c {tile_bounds_str} -G {group} -F {sigma_fields[group]+non_sigma_fields[group]} -O {out_file} {spacing_str}\n")
-            else:
+            elif args.matched:
                 fh.write(f"make_mosaic.py -v -w -R -d {in_dir} -g 'matched/E*.h5' -r {search_bounds_str} -f {feather} -p {pad} -c {tile_bounds_str} -G {group} -F {non_sigma_fields[group]} -O {out_file} {spacing_str}\n")
                 if args.calc_sigma:
                     fh.write(f"make_mosaic.py -w -d {in_dir} -g 'prelim/E*.h5' -r {search_bounds_str} -f {feather} -p {pad} -c {tile_bounds_str} -G {group} -F {sigma_fields[group]} -O {out_file} {spacing_str}\n")
