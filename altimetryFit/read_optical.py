@@ -106,7 +106,7 @@ def read_ATM_ICESSN(xy0, W, gI_files, sensor=3.5, track_identifier=None):
             D0 += temp
     return D0
 
-def read_ATM(xy0, W, gI_files, sensor=3, blockmedian_scale=100.):
+def read_ATM(xy0, W, gI_files, sensor=3, blockmedian_scale=100., slope_rescale=1.):
     fields=['x','y','z', 'time','bias_50m', 'noise_50m', 'N_50m','slope_x','slope_y']
     if W is not None:
         dx=1.e4
@@ -130,7 +130,7 @@ def read_ATM(xy0, W, gI_files, sensor=3, blockmedian_scale=100.):
         for field in D.fields:
             setattr(D, field, getattr(D, field).ravel())
         good=np.isfinite(D.bias_50m) & (D.N_50m > 20) & (np.abs(D.bias_50m) < 20)
-        slope_mag=np.sqrt(D.slope_x**2 + D.slope_y**2)
+        slope_mag=np.sqrt(D.slope_x**2 + D.slope_y**2)*slope_rescale
         D.assign({'slope_mag':slope_mag})
         good=good & (D.bias_50m < 0.5) & (slope_mag < 6*np.pi/180) & (np.abs(D.bias_50m) < 10)
         D.assign({'sigma': np.sqrt((4*slope_mag)**2+D.noise_50m**2+0.05**2),
@@ -154,16 +154,23 @@ def read_LVIS(xy0, W, gI_files, sensor=4, blockmedian_scale=100):
         if temp is not None:
             D0 += temp
     for ind, D in enumerate(D0):
-        # LVIS data have the wrong sign on their 'bias' field
-        D.bias_50m *=-1
         slope_mag=np.sqrt(D.slope_x**2 + D.slope_y**2)
-        good = (D.bias_50m < 0.5) & (slope_mag < 6*np.pi/180) & (np.abs(D.bias_50m) < 10)
+        if 'bias_50m' in D.fields:
+            # older LVIS data have the wrong sign on their 'bias' field
+            D.bias_50m *=-1
+            good = (D.bias_50m < 0.5) & (slope_mag < 6*np.pi/180) & (np.abs(D.bias_50m) < 10)
+            sigma = np.sqrt((4 * slope_mag)**2 + D.noise_50m**2 + 0.05**2)
+        else:
+            # Newer LVIS data don't have a bias field, and have days_J2k for a time field
+            good =  slope_mag < 6*np.pi/180
+            sigma = np.sqrt((4*slope_mag)**2 + 0.05**2)
+            D.assign( time = D.days_J2k / 365.25 + 2000 )
         good=good.ravel()
         if not np.any(good):
             continue
-        D.assign({  'sigma': np.sqrt((4*slope_mag)**2+D.noise_50m**2+0.05**2),
-                    'sigma_corr':0.025+np.zeros_like(D.time),
-                    'slope_mag':slope_mag})
+        D.assign({  'sigma': sigma,
+                    'sigma_corr' : 0.025+np.zeros_like(D.time),
+                    'slope_mag' : slope_mag})
         #if D.size==D.zb.size:
         #    # some LVIS data have a zb field, which is a better estimator of surface elevation than the 'z' field
         #    D.z=D.zb
@@ -183,12 +190,16 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
               SRS_proj4=None,\
               mask_file=None, DEM_file=None, \
               geoid_file=None, water_mask_threshold=None,
-              mask_floating=False, time_range=None,
-              dem_subset_TF=False, seg_diff_tol=4,
+              mask_floating=False,
+              time_range=None,
+              dem_subset_TF=False,
+              seg_diff_tol=4,
               pgc_url_file=None,
               DEM_dt_min=None,
+              DEM_t_buffer=None,
               DEM_sigma_corr=20,
-              problem_DEM_file=None,
+              data_sigma_max=None,
+              problem_DEM_files=None,
               xy_bias_file=None):
     """
     Read laser-altimetry and DEM data from geoIndex files.
@@ -218,6 +229,10 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
         DEM file to use in filtering data. The default is None.
     DEM_file : str, optional
         reference DEM against which DEM data will be tested based on DEM_tolerance
+    DEM_dt_min : float, optional
+        DEMs must be farther apart in time than this value, OTW the DEM with the largest errors will be edited out
+    DEM_t_buffer : float, optional
+        Do not use DEMs that are less than this time increment after/before the start/end of the time period
     geoid_file : str, optional
         geoid file to use in filtering data. The default is None.
     water_mask_threshold : float, optional
@@ -228,8 +243,10 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
         time range within which are accepted.  The default is None
     dem_subset_TF : bool, optional
         If true, DEM data are subsetted to provide one value per year. The default is False.
-    problem_DEM_file: str, optional
-        File listing DEMs that should be excluded from the analysis
+    data_sigma_max : float, optional
+        Data with sigma values larger than this value will be ignored
+    problem_DEM_files: str, optional
+        List of files containing DEM files to be excluded from the analysis
     xy_bias_file: str, optional
         file from which to read xy biases for ICESat-2 data.
 
@@ -285,10 +302,8 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
                 # cleanup additional fields:
                 for field in ['h_li','seg_azimuth','ref_azimuth','ref_coelv']:
                     Di.fields.remove(field)
-
-            #if hemisphere==-1:
-                # remove cycle 1 (overconstrains 2018-2019 based on not enough data)
-                #Di.index(Di.time > 2019.0)
+            if data_sigma_max is not None:
+                Di.index(Di.sigma < data_sigma_max)
 
     if 'ICESat1' in GI_files:
         D_IS = read_ICESat(xy0, W, find_gI_files(GI_files['ICESat1']),
@@ -319,18 +334,23 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
             year_offset=0
         else:
             year_offset=0.5
+        DEM_time_range = time_range.copy()
+        if time_range is not None and DEM_t_buffer is not None:
+            DEM_time_range = np.array([DEM_time_range[0]+DEM_t_buffer, DEM_time_range[1]-DEM_t_buffer])
         D_DEM, sensor_dict, DEM_meta_dict = read_DEM_data(xy0, W, sensor_dict, \
                             gI_files=find_gI_files(GI_files['DEM']), \
                             hemisphere=hemisphere,
                             blockmedian_scale=bm_scale['DEM'],
-                            time_range=time_range,
+                            time_range = DEM_time_range,
                             target_area=target_area,
                             N_target=N_target['DEM'],
                             DEM_dt_min=DEM_dt_min,
                             sigma_corr=DEM_sigma_corr,
                             pgc_url_file=pgc_url_file,
-                            problem_DEM_file=problem_DEM_file,
-                            subset_stack=dem_subset_TF, year_offset=year_offset)
+                            problem_DEM_files=problem_DEM_files,
+                            subset_stack=dem_subset_TF,
+                            data_sigma_max=data_sigma_max,
+                            year_offset=year_offset)
         if D_DEM is not None:
             D += D_DEM
     if len(D)==0:

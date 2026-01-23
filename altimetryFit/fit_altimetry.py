@@ -37,7 +37,6 @@ os.environ['OMP_NUM_THREADS']=n_threads
 #warnings.simplefilter('error')
 
 import numpy as np
-#import matplotlib.pyplot as plt
 from LSsurf.smooth_fit import smooth_fit
 from LSsurf import fd_grid
 from altimetryFit.reread_data_from_fits import reread_data_from_fits
@@ -236,7 +235,6 @@ def setup_lagrangian(velocity_files=None, velocity_type = None, lagrangian_epoch
     if isinstance(velocity_files, str):
         velocity_files=[velocity_files]
     if len(velocity_files) == 1:
-
         if 'NSIDC-0731' in os.path.basename(velocity_files[0]):
             with xr.open_dataset(velocity_files[0]) as ds:
                 t_vel=np.array(
@@ -424,7 +422,9 @@ def interp_ds(ds, scale):
                 zi[:,:,epoch] = temp.interp(xi, yi, gridded=True)
             return pc.grid.data().from_dict({'x':xi, 'y':yi, 'time':ds.time, field:zi})
 
-def save_fit_to_file(S,  filename, sensor_dict=None, dzdt_lags=None, reference_epoch=0):
+def save_fit_to_file(S,  filename, sensor_dict = None, dzdt_lags = None,
+                     reference_epoch = 0,
+                     args = None):
     if os.path.isfile(filename):
         os.remove(filename)
     with h5py.File(filename,'w') as h5f:
@@ -462,6 +462,19 @@ def save_fit_to_file(S,  filename, sensor_dict=None, dzdt_lags=None, reference_e
             h5f.create_group('/grid_bias')
         if 'jitter_bias_grids' in S['m'] and 'jitter_bias' not in h5f:
             h5f.create_group('/jitter_bias')
+        if args is not None:
+            if 'input_args' not in h5f['/meta/']:
+                h5f.create_group('/meta/input_args')
+                for name, val in args.__dict__.items():
+                    if val is not None:
+                        if isinstance(val, dict):
+                            val=json.dumps(val)
+                        try:
+                            h5f['/meta/input_args'].attrs[name]=val
+                        except Exception as e:
+                            print(f"failed to write argument {name}")
+                            print(e)
+                            pass
     if 'sensor_bias_grids' in S['m']:
         for name, ds in S['m']['sensor_bias_grids'].items():
                 ds.to_h5(filename, group='/grid_bias/'+name)
@@ -471,7 +484,6 @@ def save_fit_to_file(S,  filename, sensor_dict=None, dzdt_lags=None, reference_e
     for key , ds in S['m'].items():
         if isinstance(ds, pc.grid.data):
                 ds.to_h5(filename, group=key)
-    return
 
 def assign_sigma_corr(D, orbital_sensors=[-2, -1, 1, 2], airborne_sensors=[3, 3.5, 4, 5]):
 
@@ -537,7 +549,6 @@ def fit_altimetry(xy0=None, Width=4e4, \
             bias_nsigma_iteration=3,\
             prior_edge_args=None,\
             replace=False, \
-            DOPLOT=False, \
             spring_only=False, \
             xy_bias_file=None,\
             firn_fixed=False, firn_rescale=False, \
@@ -546,6 +557,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
             firn_mask_file=None,\
             calc_FAC_anomaly=True,\
             GI_files=None,\
+            DEM_t_buffer=None,\
             geoid_file=None,\
             mask_file=None, \
             mask_zero_scale=10,\
@@ -553,7 +565,8 @@ def fit_altimetry(xy0=None, Width=4e4, \
             or_mask_files=None, \
             DEM_file=None,\
             DEM_tol=None,\
-            problem_DEM_file=None,\
+            data_sigma_max=None,\
+            problem_DEM_files=None,\
             mask_floating=False,\
             water_mask_threshold=None, \
             bm_scale=None,
@@ -583,9 +596,10 @@ def fit_altimetry(xy0=None, Width=4e4, \
             converge_tol_frac=0.005,\
             params=None,\
             DEM_grid_bias_params=None,\
-            DEM_sigma_corr=20):
+            DEM_sigma_corr=20,\
+            THREADS=THREADS):
     """
-        Wrapper for smooth_xytb_fit_aug that can find data and set the appropriate parameters
+        Wrapper for smooth_fit that can find data and set the appropriate parameters
     """
     print("fit_OIB: working on %s" % out_name)
 
@@ -688,7 +702,9 @@ def fit_altimetry(xy0=None, Width=4e4, \
         #TEST: crop the data in case we're rereading subsets
         data.crop((xy0[0]+np.array([-1, 1])*W['x']/2, xy0[1]+np.array([-1, 1])*W['y']/2))
         sensor_dict=make_sensor_dict(reread_file, data)
-        DEM_meta_dict = regen_DEM_meta(xy0, W, data, reread_file, GI_files['DEM'],
+        DEM_meta_dict={}
+        if 'DEM' in GI_files:
+            DEM_meta_dict = regen_DEM_meta(xy0, W, data, reread_file, GI_files['DEM'],
                         read_basis_vectors=True,
                         pgc_url_file = DEM_grid_bias_params['jitter_url_list_file'])
     elif reread_dirs is None:
@@ -715,10 +731,12 @@ def fit_altimetry(xy0=None, Width=4e4, \
                                 time_range=t_span, \
                                 DEM_file=DEM_file, \
                                 DEM_dt_min=DEM_dt_min,\
-                                pgc_url_file=pgc_url_file,
+                                DEM_t_buffer=DEM_t_buffer,\
+                                data_sigma_max=data_sigma_max,\
+                                pgc_url_file=pgc_url_file,\
                                 DEM_sigma_corr=DEM_sigma_corr,\
                                 hemisphere=hemisphere,
-                                problem_DEM_file=problem_DEM_file,
+                                problem_DEM_files=problem_DEM_files,
                                 seg_diff_tol=seg_diff_tol,
                                 xy_bias_file=xy_bias_file)
 
@@ -774,8 +792,6 @@ def fit_altimetry(xy0=None, Width=4e4, \
     else:
         data, sensor_dict = reread_data_from_fits(xy0, Width, reread_dirs, template='E%d_N%d.h5')
 
-    print("fit_altimetry:")
-    print(data.summary())
     if shelf_only and hasattr(data, 'floating'):
         data.index(data.floating>0.1)
         if data.size==0:
@@ -875,7 +891,16 @@ def fit_altimetry(xy0=None, Width=4e4, \
                     .interp(data.x, data.y) + reference_DEM_offset)
 
         data.z -= data.z_ref
+        data.index(np.isfinite(data.z))
         E_RMS0['z0'] = reference_DEM_uncertainty
+
+    data.index(np.isfinite(data.z) & (np.isfinite(data.sigma)))
+    if data.size == 0:
+        if verbose:
+            print("fit_altimetry:No valid data found, returning")
+        return None, None, None
+    print("fit_altimetry:")
+    print(data.summary())
     # run the fit
     if verbose:
         print("="*50)
@@ -906,7 +931,8 @@ def fit_altimetry(xy0=None, Width=4e4, \
                      sigma_extra_keys=sigma_extra_keys,\
                      sensor_grid_bias_params=sensor_grid_bias_params,\
                      lagrangian_coords=lagrangian_coords,\
-                     converge_tol_frac_TSE=converge_tol_frac)
+                     converge_tol_frac_TSE=converge_tol_frac,
+                     THREADS=THREADS)
 
     if return_fit_objects:
         return S
@@ -961,6 +987,7 @@ def parse_inputs(argv):
     parser.add_argument('--bias_params', type=str, nargs='+', default=['time_corr','sensor','spot'])
     parser.add_argument('--DEM_grid_bias_params_file', type=path, help='file containing DEM grid bias params')
     parser.add_argument('--DEM_sigma_corr', type=float, default=20, help='tolerance for mean DEM bias, default=20')
+    parser.add_argument('--DEM_t_buffer', type=float, default=0.5, help='do not use DEMs unless they are at least this time after the beginning/before the end of the time span')
     parser.add_argument('--bias_nsigma_edit', type=int, default=6, help='edit points whose estimated bias is more than this value times the expected')
     parser.add_argument('--bias_nsigma_iteration', type=int, default=6, help='apply bias_nsigma_edit after this iteration')
     parser.add_argument('--bm_scale_laser', type=float, default=50, help="blockmedian scale to apply to laser data")
@@ -972,7 +999,8 @@ def parse_inputs(argv):
     parser.add_argument('--DEM_file', type=path, help='DEM file to use with the DEM_tol parameter and in slope error calculations')
     parser.add_argument('--DEM_tol', type=float, help='Tolerance for selecting points relative to the DEM file')
     parser.add_argument('--DEM_dt_min', type=float, help="if two DEMs are closer to time than this value, data from the one with the larger errors will be deleted")
-    parser.add_argument('--problem_DEM_file', type=path, help='file listing problematic DEM files')
+    parser.add_argument('--data_sigma_max', type=float, help="points with sigma estimates larger than this value will be ignored")
+    parser.add_argument('--problem_DEM_files', type=str, help='files listing problematic DEM files, comma separated')
     parser.add_argument('--mask_floating', action="store_true")
     parser.add_argument('--map_dir','-m', type=path)
     parser.add_argument('--firn_directory', type=path, help='directory containing firn model')
@@ -1013,6 +1041,7 @@ def parse_inputs(argv):
     parser.add_argument('--avg_scales', type=str, help='scales at which to report average errors, comma-separated list, no spaces')
     parser.add_argument('--error_res_scale','-s', type=float, nargs=2, default=[4, 2], help='if the errors are being calculated (see calc_error_file), scale the grid resolution in x and y to be coarser')
     parser.add_argument('--converge_tol_frac', type=float, default=0.005, help='if the fractional change between two smooth_fit iterations is less than this value, the iteration has converged')
+    parser.add_argument('--THREADS', type=int, default=1, help='number of threads to use in suitesparse calculations')
     parser.add_argument('--max_mem', type=float, default=15., help='maximum memory the program is allowed to use, in GB.')
     args, unk=parser.parse_known_args(argv)
 
@@ -1045,6 +1074,9 @@ def parse_inputs(argv):
         args.calc_FAC_anomaly=False
     else:
         args.calc_FAC_anomaly=True
+
+    if args.base_directory is None and args.reread_file is not None:
+        args.base_directory = os.path.dirname(os.path.dirname(args.reread_file))
 
     prior_dirs=None
     if args.matched:
@@ -1136,6 +1168,11 @@ def parse_inputs(argv):
         except (FileExistsError, TypeError):
             pass
 
+    if args.problem_DEM_files is not None:
+        args.problem_DEM_files = args.problem_DEM_files.split(',')
+    else:
+        args.problem_DEM_files = []
+
     if args.out_name is None:
         args.out_name=dest_dir + '/E%d_N%d.h5' % (args.xy0[0]/1e3, args.xy0[1]/1e3)
 
@@ -1170,7 +1207,9 @@ def parse_inputs(argv):
                  'DEM':args.bm_scale_DEM}
     return args
 
-def main(argv):
+def main(argv=None):
+    if argv is None:
+        argv=sys.argv
 
     args=parse_inputs(argv)
     if isinstance(args, int):
@@ -1199,7 +1238,7 @@ def main(argv):
             reference_DEM_file=args.reference_DEM_file,\
             reference_DEM_offset=args.reference_DEM_offset,\
             reference_DEM_uncertainty=args.reference_DEM_uncertainty,\
-            problem_DEM_file=args.problem_DEM_file,\
+            problem_DEM_files=args.problem_DEM_files,\
             hemisphere=args.Hemisphere, \
             reread_dirs=args.reread_dirs, \
             out_name=args.out_name, \
@@ -1222,7 +1261,8 @@ def main(argv):
             and_mask_files=args.and_mask_files,\
             or_mask_files=args.or_mask_files,\
             DEM_file=args.DEM_file,\
-            DEM_tol=args.DEM_tol,
+            DEM_tol=args.DEM_tol,\
+            DEM_t_buffer=args.DEM_t_buffer,\
             geoid_file=args.geoid_file,\
             mask_floating=args.mask_floating,\
             extra_error=args.extra_error, \
@@ -1238,7 +1278,8 @@ def main(argv):
             avg_scales=args.avg_scales,\
             DEM_dt_min=args.DEM_dt_min,\
             DEM_sigma_corr=args.DEM_sigma_corr,\
-            DEM_grid_bias_params=args.DEM_bias_params)
+            DEM_grid_bias_params=args.DEM_bias_params,\
+            THREADS=args.THREADS)
 
     if S is None:
         return
@@ -1247,7 +1288,8 @@ def main(argv):
         if 'm' in S and len(S['m']) > 0:
             save_fit_to_file(S, args.out_name, sensor_dict=sensor_dict,\
                              dzdt_lags=S['dzdt_lags'], \
-                             reference_epoch=args.reference_epoch)
+                             reference_epoch=args.reference_epoch,
+                             args=args)
     else:
         if 'sigma_z0' not in S['E']:
             print("fit_altimetr.py: no sigma_z0 calculated, returning")
@@ -1263,5 +1305,6 @@ def main(argv):
     total_memory = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss +\
         resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
     print(f"peak memory usage (kB)={total_memory}")
+
 if __name__=='__main__':
     main(sys.argv)

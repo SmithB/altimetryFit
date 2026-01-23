@@ -22,25 +22,21 @@ def get_2m_filename(thefile):
     DEM_re=re.compile('(.*)_\d+m_(.*)')
     return '_2m_'.join(DEM_re.search(os.path.basename(thefile)).groups()).replace('_filt.tif','.tif')
 
-def read_problem_DEM_file(GI_files, problem_DEM_file=None):
+def read_problem_DEM_file(GI_files, problem_DEM_files=None):
     # some DEMs come up as problematic in testing.  Here is where we remove them
     # need to make a 'problem_DEMs.txt' file in the same directory as the GI.
     # Optionally, we can read a problem_DEM file listing problematic DEMs found
     # from different sources
     # Lines should have a filename (directory not required) and an optional comment
     DEM_list=[]
+    if problem_DEM_files is None:
+        problem_DEM_files = []
     for ff in GI_files:
-        problem_DEMs_file=os.path.dirname(ff)+'/problem_DEMs.txt'
+        problem_DEM_files += glob.glob(
+            os.path.join(os.path.dirname(ff),'problem_DEMs*.txt'))
 
-        if os.path.isfile(problem_DEMs_file):
-            with open(problem_DEMs_file,'r') as fh:
-                for line in fh:
-                    # skip commented lines
-                    if line[0] == '#':
-                        continue
-                    DEM_list += [line.split('#')[0].rstrip()]
-    if problem_DEM_file is not None:
-        with open(problem_DEM_file,'r') as fh:
+    for file in problem_DEM_files:
+        with open(file,'r') as fh:
             for line in fh:
                 # skip commented lines
                 if line[0] == '#':
@@ -123,8 +119,11 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
                   read_basis_vectors=True,
                   pgc_url_file=None,
                   DEM_meta_config=None, DEM_res=32,
-                  problem_DEM_file=None,
-                  DEBUG=False, target_area=None, time_range=None,
+                  problem_DEM_files=None,
+                  DEBUG=False,
+                  target_area=None,
+                  time_range=None,
+                  data_sigma_max=None,
                   include_xtrack=False, VERBOSE=True):
 
     if DEM_meta_config is None:
@@ -133,10 +132,10 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
     if sensor_dict is None:
         sensor_dict={}
 
-    if problem_DEM_file is None and 'problem_DEM_file' in DEM_meta_config:
-        problem_DEM_file=DEM_meta_config('problem_DEM_file')
+    if problem_DEM_files is None and 'problem_DEM_file' in DEM_meta_config:
+        problem_DEM_files=[DEM_meta_config('problem_DEM_file')]
 
-    problem_DEMs = read_problem_DEM_file(gI_files, problem_DEM_file=problem_DEM_file)
+    problem_DEMs = read_problem_DEM_file(gI_files, problem_DEM_files=problem_DEM_files)
 
     if not isinstance(gI_files, list):
         if os.path.isfile(gI_files):
@@ -162,6 +161,9 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
                 print(f"No data found for file: {this_file}")
     for Di in D:
         Di.crop([xy0[0]+np.array([-W['x']/2, W['x']/2]), xy0[1]+np.array([-W['y']/2, W['y']/2])])
+    if data_sigma_max is not None:
+        for Di in D:
+            Di.index(Di.sigma < data_sigma_max)
 
     DEM_res=np.nan
     for Di in D:
