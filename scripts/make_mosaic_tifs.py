@@ -15,7 +15,7 @@ import sys
 import scipy.stats as sps
 import os
 
-def make_mosaic_tifs(input_dir, epsg, geoid_file=None):
+def make_mosaic_tifs(input_dir, epsg, geoid_file=None, t0=None, t1=None):
 
     if isinstance(epsg,str):
         epsg=int(epsg)
@@ -26,7 +26,7 @@ def make_mosaic_tifs(input_dir, epsg, geoid_file=None):
     if os.path.isfile(z0_file):
         z0=pc.grid.data().from_h5(z0_file, group='z0', fields=['z0','cell_area','count'])
         z0.z0[z0.cell_area < 10]=np.nan
-        if geoid_file is not None:
+        if geoid_file is not None and geoid_file != "None":
             geoid=pc.grid.data().from_geotif(geoid_file, bounds=z0.bounds())
             z0.z0 -= geoid.interp(z0.x, z0.y, gridded=True)
         z0.calc_gradient(field='z0')
@@ -36,6 +36,12 @@ def make_mosaic_tifs(input_dir, epsg, geoid_file=None):
     dz_file=os.path.join(input_dir,'dz.h5')
     if os.path.isfile(dz_file):
         dz=pc.grid.data().from_h5(dz_file, group='dz', fields=['dz','cell_area','count'])
+        if t0 is not None:
+            print(f'make_mosaic_tifs: using data from after {t0}')
+            dz=dz[:, :, dz.t >= float(t0)]
+        if t1 is not None:
+            print(f'make_mosaic_tifs: using data from before {t1}') 
+            dz=dz[:, :, dz.t <= float(t1)]
         dz.dz[dz.cell_area<100]=np.nan
         dz.assign(dzdt=(dz.dz[:,:,-1]-dz.dz[:,:,0])/(dz.t[-1]-dz.t[0]))
         dz.to_geotif(os.path.join(tif_dir,'dzdt.tif'), field='dzdt', srs_epsg=epsg)
