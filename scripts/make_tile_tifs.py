@@ -24,8 +24,10 @@ def make_tile_tifs(dz_file, epsg, verbose=True, mask_w = None, geoid_file=None, 
     if isinstance(epsg,str):
         epsg=int(epsg)
     tif_dir=os.path.join(input_dir,'tif')
-    if not os.path.isdir(tif_dir):
+    try:
         os.mkdir(tif_dir)
+    except FileExistsError:
+        pass
     groups = ['z0','dz0dx', 'count','epoch_count','dzdt','sigma_dzdt',  'epoch_count','dz0_tot_dx']
     if read_sigma:
         groups += ['sigma_z0']
@@ -42,7 +44,7 @@ def make_tile_tifs(dz_file, epsg, verbose=True, mask_w = None, geoid_file=None, 
     if read_sigma:
         z0_fields += ['sigma_z0']
     if os.path.isfile(z0_file):
-        z0=pc.grid.data().from_h5(z0_file, group='z0', fields = sigma_z0)
+        z0=pc.grid.data().from_h5(z0_file, group='z0', fields = z0_fields)
         z0.z0[z0.cell_area < 10]=np.nan
         if mask_w is not None:
             mask_N = int(np.ceil(mask_w / (z0.x[1]-z0.x[0])))
@@ -97,8 +99,8 @@ def make_tile_tifs(dz_file, epsg, verbose=True, mask_w = None, geoid_file=None, 
         dzL.to_geotif(os.path.join(tif_dir, 'dz0_tot_dx', f'dz0_tot_dx{base}.tif'), field='z0_tot_x', srs_epsg=epsg)
     return None
 
-def main(*args):
-
+def main():
+    args=sys.argv
     parser=argparse.ArgumentParser()
     parser.add_argument('dz_file', type=str, help='tile file containing dz')
     parser.add_argument('epsg', type=int, help='working EPSG')
@@ -113,4 +115,4 @@ def main(*args):
         make_tile_tifs(thefile, args.epsg, verbose=args.verbose, mask_w=args.mask_w, geoid_file=args.geoid_file, read_sigma=args.read_sigma)
 
 if __name__=='__main__':
-    main(*sys.argv)
+    main()

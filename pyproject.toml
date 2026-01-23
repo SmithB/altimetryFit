@@ -1,0 +1,93 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "altimetryFit"
+description = "Utilities for fitting DEMs and elevation changes to altimetry data"
+keywords = [
+    "ICESat",
+    "ICESat-2",
+    "CryoSat-2",
+    "Operation IceBridge",
+    "geoindex",
+]
+authors = [
+    {name = "Ben Smith"},
+    {email = "besmith@uw.edu"}
+]
+maintainers = [
+    {name = "pointCollection contributors"}
+]
+license = {file = "LICENSE"}
+readme = "README.md"
+version = "1.0.0.0"
+
+requires-python = ">=3.6"
+dependencies = [
+    "h5py",
+    "matplotlib",
+    "netCDF4",
+    "numpy",
+    "pyproj",
+    "scipy>=1.10.1",
+    "shapely"
+]
+
+classifiers=[
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.6",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+[project.urls]
+Repository = "https://github.com/SmithB/altimetryFit"
+Issues = "https://github.com/SmithB/altimetryFit/issues"
+
+[project.optional-dependencies]
+all = ["gdal", "notebook", "shapely"]
+dev = ["flake8", "pytest>=4.6", "pytest-cov"]
+
+[project.scripts]
+"make_tile_tifs.py" = "scripts.make_tile_tifs:main"
+"update_pgc_meta.py" = "scripts.update_pgc_meta:main"
+"dem_cleanup_with_ref_DEM.py" = "scripts.dem_cleanup_with_ref_DEM:main"
+"dem_filter.py" = "scripts.dem_filter:main"
+"make_SMB_for_z0.py" = "scripts.make_SMB_for_z0:main"
+"make_OIB_queue.py" = "scripts.make_OIB_queue:main"
+"mask_DEM_plane_artifacts.py" = "scripts.mask_DEM_plane_artifacts:main"
+"model_to_file.py" = "scripts.model_to_file:main"
+"make_200km_tiles.py" = "scripts.make_200km_tiles:main"
+"make_SMB_for_tile.py" = "scripts.make_SMB_for_tile:main"
+"check_calc_firn_anomaly.py" = "scripts.check_calc_firn_anomaly:main"
+"make_mos_tiles.py" = "scripts.make_mos_tiles:main"
+"calc_DEM_misfit.py" = "scripts.calc_DEM_misfit:main"
+"make_mosaic_tifs.py" = "scripts.make_mosaic_tifs:main"
+"bias_stats_from_tiles.py" = "scripts.bias_stats_from_tiles:main"
+"fit_altimetry.py" = "altimetryFit.fit_altimetry:main"
+
+[tool.setuptools]
+script-files = ["scripts/regen_OIB_mosaics.sh", "scripts/proc_pgc_dem.sh", "scripts/get_pgc_fullres.sh", "scripts/get_pgc_2res.sh"]
+
+[tool.setuptools.packages.find]
+exclude = ["test*"]
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+norecursedirs = ".git"
+python_files = [
+    "test*.py"
+]
+testpaths = [
+    "test"
+]
