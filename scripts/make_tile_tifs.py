@@ -8,11 +8,9 @@ Created on Fri Jul 12 09:17:08 2024
 
 import numpy as np
 #import matplotlib.pyplot as plt
-import h5py
 import pointCollection as pc
 import argparse
 import sys
-import scipy.stats as sps
 import scipy.ndimage as snd
 import os
 import glob
@@ -23,6 +21,8 @@ def make_tile_tifs(dz_file, epsg, verbose=True, mask_w = None, geoid_file=None, 
 
     if isinstance(epsg,str):
         epsg=int(epsg)
+    #gtif_kwargs={'driver':'COG','srs_epsg':epsg}
+    gtif_kwargs={'srs_epsg':epsg}
     tif_dir=os.path.join(input_dir,'tif')
     try:
         os.mkdir(tif_dir)
@@ -58,11 +58,11 @@ def make_tile_tifs(dz_file, epsg, verbose=True, mask_w = None, geoid_file=None, 
             geoid=pc.grid.data().from_geotif(geoid_file, bounds=z0.bounds(pad=1.e4))
             z0.z0 -= geoid.interp(z0.x, z0.y, gridded=True)
         z0.calc_gradient(field='z0')
-        z0.to_geotif(os.path.join(tif_dir,'dz0dx', f'dz0dx{base}.tif'), field='z0_x', srs_epsg=epsg)
-        z0.to_geotif(os.path.join(tif_dir,'z0', f'z0{base}.tif'), field='z0', srs_epsg=epsg)
-        z0.to_geotif(os.path.join(tif_dir,'count', f'count{base}.tif'), field='count', srs_epsg=epsg)
+        z0.to_geotif(os.path.join(tif_dir,'dz0dx', f'dz0dx{base}.tif'), field='z0_x', **gtif_kwargs)
+        z0.to_geotif(os.path.join(tif_dir,'z0', f'z0{base}.tif'), field='z0', **gtif_kwargs)
+        z0.to_geotif(os.path.join(tif_dir,'count', f'count{base}.tif'), field='count', **gtif_kwargs)
         if read_sigma:
-            z0.to_geotif(os.path.join(tif_dir,'sigma_z0', f'sigma_z0{base}.tif'), field='sigma_z0', srs_epsg=epsg)
+            z0.to_geotif(os.path.join(tif_dir,'sigma_z0', f'sigma_z0{base}.tif'), field='sigma_z0', **gtif_kwargs)
     dz_file=os.path.join(input_dir,'dz','dz'+base)
     if os.path.isfile(dz_file):
         dz=pc.grid.data().from_h5(dz_file, group='dz', fields=['dz','cell_area','count'])
@@ -77,10 +77,10 @@ def make_tile_tifs(dz_file, epsg, verbose=True, mask_w = None, geoid_file=None, 
             dz.mask=np.ones_like(dz.epoch_count)
 
         dz.assign(dzdt=dz.mask*(dz.dz[:,:,-1]-dz.dz[:,:,0])/(dz.t[-1]-dz.t[0]))
-        dz.to_geotif(os.path.join(tif_dir,'dzdt', f'dzdt{base}.tif'), field='dzdt', srs_epsg=epsg)
+        dz.to_geotif(os.path.join(tif_dir,'dzdt', f'dzdt{base}.tif'), field='dzdt', **gtif_kwargs)
         dz.assign(sigma_dzdt=dz.mask*np.std(np.diff(dz.dz, axis=2), axis=2)/(dz.t[1]-dz.t[0]))
-        dz.to_geotif(os.path.join(tif_dir, 'sigma_dzdt',f'sigma_dzdt{base}.tif'), field='sigma_dzdt', srs_epsg=epsg)
-        dz.to_geotif(os.path.join(tif_dir, 'epoch_count',f'epoch_count{base}.tif'), field='epoch_count', srs_epsg=epsg)
+        dz.to_geotif(os.path.join(tif_dir, 'sigma_dzdt',f'sigma_dzdt{base}.tif'), field='sigma_dzdt', **gtif_kwargs)
+        dz.to_geotif(os.path.join(tif_dir, 'epoch_count',f'epoch_count{base}.tif'), field='epoch_count', **gtif_kwargs)
     dzL_file=os.path.join(input_dir,'lagrangian_dz','lagrangian_dz'+base)
     if os.path.isfile(dzL_file):
         for group in ['dzL','dzLdx','dz0_tot_dx']:
@@ -92,11 +92,11 @@ def make_tile_tifs(dz_file, epsg, verbose=True, mask_w = None, geoid_file=None, 
             dzL.dz *= z0.mask
         dzL.dz[z0.cell_area <10]=np.nan
         dzL.calc_gradient(field='dz')
-        dzL.to_geotif(os.path.join(tif_dir,'dzLdx', f'dzLdx{base}.tif'), field='dz_x', srs_epsg=epsg)
-        dzL.to_geotif(os.path.join(tif_dir,'dzL', f'dzL{base}.tif'), field='dz', srs_epsg=epsg)
+        dzL.to_geotif(os.path.join(tif_dir,'dzLdx', f'dzLdx{base}.tif'), field='dz_x', **gtif_kwargs)
+        dzL.to_geotif(os.path.join(tif_dir,'dzL', f'dzL{base}.tif'), field='dz', **gtif_kwargs)
         dzL.assign(z0_tot=z0.z0+dzL.dz)
         dzL.calc_gradient(field='z0_tot')
-        dzL.to_geotif(os.path.join(tif_dir, 'dz0_tot_dx', f'dz0_tot_dx{base}.tif'), field='z0_tot_x', srs_epsg=epsg)
+        dzL.to_geotif(os.path.join(tif_dir, 'dz0_tot_dx', f'dz0_tot_dx{base}.tif'), field='z0_tot_x', **gtif_kwargs)
     return None
 
 def main():
