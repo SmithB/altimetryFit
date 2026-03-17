@@ -191,12 +191,14 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
               mask_file=None, DEM_file=None, \
               geoid_file=None, water_mask_threshold=None,
               mask_floating=False,
+              tide_mask_file=None,
               time_range=None,
               dem_subset_TF=False,
               seg_diff_tol=4,
               pgc_url_file=None,
               DEM_dt_min=None,
               DEM_t_buffer=None,
+              DEM_slope_bias_scale=None,
               DEM_sigma_corr=20,
               data_sigma_max=None,
               problem_DEM_files=None,
@@ -266,7 +268,7 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
     D=[]
     DEM=None
     if DEM_file is not None:
-        DEM=pc.grid.data().from_geotif(DEM_file, \
+        DEM = pc.grid.data().from_geotif(DEM_file, \
                                        bounds=[ii+np.array([-1.1, 1.1])*W['x'] for ii in xy0])
         if 'z' in DEM.fields:
             DEM.calc_gradient()
@@ -281,7 +283,9 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
                     cplx_accept_threshold=0.25,
                     blockmedian_scale=bm_scale['laser'],
                     N_target=N_target['laser'],
-                    seg_diff_tol=seg_diff_tol)
+                    seg_diff_tol=seg_diff_tol,
+                    DEM_slope_bias_scale=DEM_slope_bias_scale,
+                    t_range=time_range)
 
         for Di in D:
             if not hasattr(Di,'x'):
@@ -356,14 +360,6 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
     if len(D)==0:
         return None, None, None
 
-    # two masking steps:
-    # delete data over rock and ocean
-    if mask_file is not None:
-        mask=pc.grid.data().from_geotif(mask_file, bounds=[xy0[0]+np.array([-1, 1])*W['x']*1.1, xy0[1]+np.array([-1, 1])*W['y']*1.1])
-        for Di in D:
-            if Di is not None and mask_floating:
-                Di.index(mask.interp(Di.x, Di.y) > 0.1)
-
     # if we have a geoid, delete data that are less than 10 m above it
     if geoid_file is not None:
         geoid=pc.grid.data().from_geotif(geoid_file, bounds=[xy0[0]+np.array([-1, 1])*W['x']*1.1, xy0[1]+np.array([-1, 1])*W['y']*1.1])
@@ -372,5 +368,18 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
                 Di.assign({'geoid':geoid.interp(Di.x, Di.y)})
                 if water_mask_threshold  is not None:
                     Di.index((Di.z-Di.geoid) > water_mask_threshold)
+
+    if DEM_slope_bias_scale is not None and DEM_file is not None:
+        # DEM should have been defined above and its gradient should have been
+        # calculated
+        for Di in D:
+            Di.assign(z_x = DEM.interp(Di.x, Di.y, field='z_x'))
+            Di.assign(z_y = DEM.interp(Di.x, Di.y, field='z_y'))
+            for field in ['E_scale_z_x', 'E_scale_z_y']:
+                # reasonable hard-coded values?
+                temp=np.zeros_like(Di.x)+1
+                temp[Di.sensor == 2] = 3.5
+                temp[Di.sensor > 3] = 5
+                Di.assign({field:temp})
 
     return D, sensor_dict, DEM_meta_dict
