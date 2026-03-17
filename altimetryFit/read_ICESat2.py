@@ -11,6 +11,29 @@ from .check_ATL06_hold_list import read_ATL06_hold_files as read_hold_files
 #from PointDatabase.point_data import point_data
 #from PointDatabase.ATL06_filters import segDifferenceFilter
 import pointCollection as pc
+import os
+import datetime
+import json
+import re
+from importlib import resources
+
+def select_gIs_by_cycle(gI_files, time_range):
+    calendar_file = os.path.join(str(resources.files('altimetryFit')), 'package_data', 'IS2_calendar.json')
+    with open(calendar_file,'r') as fh:
+        is2c = json.load(fh)
+    cycle_start = [datetime.datetime(*jj) for jj in is2c.values()]
+    date_range = [datetime.datetime(2018, 1, 1) + datetime.timedelta(days = (jj-2018)*365.25) for jj in time_range]
+    # first and last cycles, inclusive (argmin here gives the first zero value, returns zero if all zero):
+    cycles = [np.argmin(np.array(cycle_start)<jj) for jj in date_range]
+
+    cycle_re = re.compile('cycle_(\d+)')
+    for gI_file in gI_files.copy():
+        try:
+            this_cycle = int(cycle_re.search(gI_file).group(1))
+            if this_cycle < cycles[0]  or this_cycle > cycles[1]:
+                gI_files.remove(gI_file)
+        except Exception:
+            pass
 
 def segDifferenceFilter(D6, tol=2, setValid=True, toNaN=False, subset=False):
     dAT=20.
@@ -41,6 +64,7 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
                  remove_overlap=False,
                  apply_hold_list=False,
                  seg_diff_tol=2, blockmedian_scale=None, cplx_accept_threshold=0.,
+                 DEM_slope_bias_scale=None,
                  t_range=None, target_area=None, N_target=None):
     field_dict={None:['delta_time','h_li','h_li_sigma','latitude','longitude','atl06_quality_summary','segment_id','sigma_geo_h'],
                 'fit_statistics':['dh_fit_dx', 'dh_fit_dy', 'n_fit_photons','w_surface_window_final','snr_significance'],
@@ -62,6 +86,10 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
     px, py=np.meshgrid(np.arange(bds['x'][0], bds['x'][1], dx),
                        np.arange(bds['y'][0], bds['y'][1], dx))
     D0=[]
+
+    if t_range is not None:
+        select_gIs_by_cycle(gI_files, t_range)
+
     for gI_file in gI_files:
         try:
             D0 += pc.geoIndex().from_file(gI_file).query_xy((px.ravel(), py.ravel()), fields=fields)
@@ -166,8 +194,12 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
         else:
             dhdy_med=np.nan
             dhdx_med=np.nan
-        sigma_geo_x=8
-        sigma_corr[ind]=np.sqrt(0.03**2+sigma_geo_x**2*(dhdx_med**2+dhdy_med**2))
+        if DEM_slope_bias_scale is None:
+            # N.B.  1/29/26: changed sigma_geo_x from 8 to 3.5
+            sigma_geo_x = 3.5
+            sigma_corr[ind]=np.sqrt(0.03**2+sigma_geo_x**2*(dhdx_med**2+dhdy_med**2))
+        else:
+            sigma_corr[ind]=0.03
         if ~np.isfinite(sigma_corr[ind]):
             sigma_corr[ind]=0.1
         D.assign({'sigma_corr':np.zeros_like(D.z)+sigma_corr[ind]})
