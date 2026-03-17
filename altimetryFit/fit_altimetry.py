@@ -10,6 +10,7 @@ C/A 2021: Code developed by smithB, under the fit_OIB_aug.py filename
 Early 2022: Renamed to fit_altimetry.py by smithB
 Mid 2022: Tsutterley added lagrangian code to fit_OIB_aug.py
 April 2023: SmithB merged lagrangian code into fit_altimetry.py
+January 2026: Lagrangian update functions moved to lagrangian_functions.py
 """
 
 import resource
@@ -54,12 +55,13 @@ from altimetryFit.read_optical import read_optical_data, laser_key
 from altimetryFit.read_DEM_data import regen_DEM_meta
 from altimetryFit.read_CS2_data import read_CS2_data, radar_key
 from altimetryFit.apply_tides import apply_tides
-import pointAdvection
+from altimetryFit.mask_functions import mask_data_by_year, update_mask_data_andor, setup_gzone_relax, apply_tide_mask_keep
+
 import h5py
 import sys
 import glob
 import json
-import xarray as xr
+from altimetryFit.lagrangian_functions import setup_lagrangian, update_data_for_lagrangian, update_output_data_for_lagrangian
 
 def set_memory_limit(max_bytes):
     '''
@@ -120,292 +122,6 @@ def custom_edits(data):
         print("fit_altimetry.custom_data_edits: Expected data fields not found, skipping")
 
 
-def mask_data_by_year(data, mask_dir):
-    masks={}
-    year_re=re.compile(r'(\d\d\d\d.+\d+).tif')
-    for file in glob.glob(mask_dir+'/*.tif'):
-        m=year_re.search(file)
-        if m is not None:
-            masks[float(m.group(1))]=pc.grid.data().from_geotif(file)
-    years=np.sort(np.array(list(masks.keys())))
-    years_ind=np.searchsorted(years, data.time)
-    good=np.ones(data.shape, dtype=bool)
-    for uy in np.unique(years_ind):
-        if uy ==0:
-            continue
-        this_mask=masks[years[uy-1]]
-        these_pts=np.flatnonzero(years_ind==uy)
-        temp=this_mask.interp(data.x[these_pts], data.y[these_pts])
-        good[these_pts[(temp<0.5) & np.isfinite(temp)]] = 0
-    data.index(good)
-
-def update_mask_data_andor(mask_data, and_mask_files, or_mask_files):
-    if and_mask_files is not None:
-        for mask_file in and_mask_files:
-            mask_i = pc.grid.data().from_file(mask_file).interp(mask_data.x, mask_data.y, gridded=True)
-            these=np.isfinite(mask_i)
-            if mask_data.z.ndim==2:
-                mask_data.z[these] = bool(mask_data.z[these]) & (mask_i[these]>0.5)
-            else:
-                for ind in range(mask_data.shape[2]):
-                    temp=mask_data.z[:,:,ind]
-                    temp[these] = temp[these].astype(bool) & (mask_i[these]>0.5)
-                    mask_data.z[:,:,ind]=temp
-    if or_mask_files is not None:
-        for mask_file in or_mask_files:
-            mask_i = pc.grid.data().from_file(mask_file).interp(mask_data.x, mask_data.y, gridded=True)
-            these=np.isfinite(mask_i)
-            if mask_data.z.ndim==2:
-                mask_data.z[these] = mask_data[these].astype(bool) | (mask_i[these] > 0.5)
-            else:
-                for ind in range(mask_data.shape[2]):
-                    temp=mask_data.z[:,:,ind]
-                    temp[these] = temp[these].astype(bool) | (mask_i[these] > 0.5)
-                    mask_data.z[:,:,ind]=temp
-
-def setup_lagrangian(velocity_files=None, velocity_type = None, lagrangian_epoch=None, reference_epoch=None,
-    SRS_proj4=None, xy0=None, Wxy=None, t_span=None, spacing=None, verbose=False,
-    **kwargs):
-    SPY=365.25*24*3600
-    # verbose output of lagrangian parameters
-    if verbose:
-        print(f'Velocity File(s): {",".join(velocity_files)}')
-        print(f'Advect parcels to {lagrangian_epoch:0.1f}')
-
-    # make the ouput arguments dictionary
-    out_args=kwargs
-    out_args.update({
-            'lagrangian_epoch':lagrangian_epoch,
-            'SRS_proj4':SRS_proj4,
-            'xy0':xy0,
-            'Wxy':Wxy})
-    if lagrangian_epoch is None:
-        # calculate the lagrangian epoch based on the reference time
-        lagrangian_epoch = fd_grid([t_span], [spacing['dt']], name='t').ctrs[0][reference_epoch]
-        print(f"lagrangian epoch is {lagrangian_epoch}")
-
-    bounds=[xyi + np.array([-0.5, 0.5])*Wxy for xyi in xy0]
-    # create arrays of grid coordinates
-    x = fd_grid([bounds[0]], [spacing['dz']], name='x').ctrs[0]
-    y = fd_grid([bounds[1]], [spacing['dz']], name='y').ctrs[0]
-    if 'xy01_grids' in velocity_files[0] or velocity_type=='xy01_grids':
-        interpolator_save_files=velocity_files
-        if not os.path.isfile(interpolator_save_files[0]):
-            interpolator_save_files=glob.glob(interpolator_save_files[0])
-            if len(interpolator_save_files)==0:
-                raise(FileNotFoundError(f"Interpolator save files {interpolator_save_files} not found"))
-    else:
-        interpolator_save_files=[os.path.splitext(velocity_files[0])[0] +'_xy01_grids.h5']
-    if os.path.isfile(interpolator_save_files[0]):
-        xy0_obj=pc.grid.mosaic().from_list(interpolator_save_files, bounds=bounds, group='xy0')
-        #xy0_obj=pc.grid.data().from_h5(interpolator_save_file,group='xy0')
-        xy1_obj=pc.grid.mosaic().from_list(interpolator_save_files, bounds=bounds, group='xy1')
-        #xy1_obj=pc.grid.data().from_h5(interpolator_save_file,group='xy1')
-        xy0_obj.years_to_time=SPY
-        with h5py.File(interpolator_save_files[0],'r') as h5f:
-            try:
-                if h5f['xy0']['t'].attrs['units']=='years':
-                    print("years!")
-                    xy0_obj.years_to_time=1
-            except:
-                pass
-        gridy, gridx, gridt = np.meshgrid(y, x,
-                                          (np.array(t_span)-lagrangian_epoch)*xy0_obj.years_to_time, indexing='ij')
-        x1=xy1_obj.interp(gridx.ravel(), gridy.ravel(), gridt.ravel(), field='x1')
-        y1=xy1_obj.interp(gridx.ravel(), gridy.ravel(), gridt.ravel(), field='y1')
-        x1 = np.append(x1, bounds[0])
-        y1 = np.append(y1, bounds[1])
-        bounds_full=[[np.nanmin(x1), np.nanmax(x1)],[np.nanmin(y1), np.nanmax(y1)]]
-        out_args.update({'xy1_obj': xy1_obj,
-            'xy0_obj': xy0_obj,
-            'bds':bounds_full})
-        return out_args
-    else:
-        xy0_obj, xy1_obj = None, None
-
-    gridx,gridy = np.meshgrid(x, y)
-    # create advection object with buffer around grid
-    adv = pointAdvection.advection(
-        x=gridx.flatten(),
-        y=gridy.flatten(),
-        t=np.zeros(gridx.flatten().shape)
-    )
-    # read velocity image and trim to a buffer extent around points
-    # use a wide buffer to encapsulate advections in fast moving areas
-    if isinstance(velocity_files, str):
-        velocity_files=[velocity_files]
-    if len(velocity_files) == 1:
-        if 'NSIDC-0731' in os.path.basename(velocity_files[0]):
-            with xr.open_dataset(velocity_files[0]) as ds:
-                t_vel=np.array(
-                    ds.time.data-np.datetime64('2000-01-01'),
-                    dtype='timedelta64[s]').astype(float)/SPY + 2000
-                if t_span is not None:
-                    t_ind = np.flatnonzero(
-                        (t_vel >= (t_span[0] - 1))
-                        & (t_vel <= (t_span[1] + 1)))
-                else:
-                    t_ind = np.flatnonzero(np.ones_like(t_vel))
-                adv.from_dict({'x':np.array(ds.x),
-                               'y':np.array(ds.y)[::-1],
-                               'U':np.array(ds.VelocitySeries[t_ind, 0, ::-1,:]),
-                               'V':np.array(ds.VelocitySeries[t_ind, 1, ::-1,:]),
-                               'eU':np.array(ds.VelocitySeries[t_ind, 3, ::-1,:]),
-                               'eV':np.array(ds.VelocitySeries[t_ind, 4, ::-1,:]),
-                               'time': t_vel[t_ind]
-                               }, t_axis=0)
-                lagrangian_interpolation = 'linear'
-        else:
-            adv.from_nc(velocity_files[0], buffer=Wxy)
-            lagrangian_interpolation = 'linear'
-    else:
-        vlist = [pc.grid.data().from_nc(v,field_mapping=dict(U='VX', V='VY')) \
-            for v in velocity_files]
-        adv.from_list(vlist, buffer=Wxy)
-        lagrangian_interpolation = 'linear'
-
-    # convert velocity times to delta times from epoch
-    adv.velocity.time = (adv.velocity.time - lagrangian_epoch)*SPY
-    adv.fill_velocity_gaps()
-
-    # create an xy1 interpolator to find the locations that might have contributed
-    # points to the dataset
-    xy1_obj = adv.xy1_interpolator(bounds=bounds,
-                                   t_range=(np.array(t_span)-lagrangian_epoch)*SPY,
-                                   t_step=0.25*SPY)
-    bounds_full = [[np.nanmin(ii.values), np.nanmax(ii.values)] for ii in\
-                           [xy1_obj.x, xy1_obj.y]]
-
-    # create an xy0 interpolator to find final locations for each point
-    xy0_obj =adv.xy0_interpolator(bounds=bounds_full,
-                                   t_range=(np.array(t_span)-lagrangian_epoch)*SPY,
-                                   t_step=0.25*SPY)
-
-    # make the ouput arguments dictionary
-    out_args=kwargs
-    out_args.update({'advection_obj':adv,
-            'method':lagrangian_interpolation,
-            'lagrangian_epoch':lagrangian_epoch,
-            'SRS_proj4':SRS_proj4,
-            'xy0':xy0,
-            'Wxy':Wxy,
-            'xy1_obj': xy1_obj,
-            'xy0_obj': xy0_obj,
-            'bds':bounds_full})
-    return out_args
-
-def apply_lagrangian_masks(data, x, y, mask_files=None, **kwargs):
-    for mask_file in mask_files:
-        mask=pc.grid.data().from_geotif(mask_file, bounds=kwargs['xy0_obj'].bounds())
-        if mask is None or np.any(mask.shape==0):
-            continue
-        year_mask = pc.grid.DEM_year(mask_file)
-        t_mask=( year_mask - kwargs['lagrangian_epoch'])*kwargs['xy0_obj'].years_to_time
-        # if we have moved the points, the location of the points at the time of the mask is
-        # found by interpolating into the xy1 object
-        xx = kwargs['xy1_obj'].interp(x, y, t_mask, field='x1')
-        yy = kwargs['xy1_obj'].interp(x, y, t_mask, field='y1')
-        mask_i = mask.interp(xx, yy)
-        keep =  (~np.isfinite(mask_i)) | ( mask_i < 0.1 ) | (data.time < year_mask)
-        data.index(keep)
-
-
-def update_data_for_lagrangian(data, lagrangian_ref_dem=None, mask_data=None, **kwargs):
-    # default keyword arguments
-    kwargs.setdefault('advection_obj', pointAdvection.advection())
-    kwargs.setdefault('lagrangian_interpolation', 'linear')
-    kwargs.setdefault('lagrangian_epoch', 0)
-    kwargs.setdefault('SRS_proj4', None)
-    kwargs.setdefault('xy0', [None,None])
-    kwargs.setdefault('Wxy', 0)
-    kwargs.setdefault('reread_data', False)
-
-    # get latitude and longitude of the original data
-    data.get_latlon(proj4_string=kwargs['SRS_proj4'])
-
-    if lagrangian_ref_dem is not None:
-        print(f'Subtracting reference dem from {lagrangian_ref_dem}')
-        data.assign(z0=data.z.copy())
-        data.z -= pc.grid.data().from_geotif(lagrangian_ref_dem,
-            bounds=data.bounds()).interp(data.x, data.y)
-        data.index(np.isfinite(data.z))
-
-    # update advection object with original coordinates and times
-    #adv = kwargs['advection_obj']
-    #adv.x = data.x.copy()
-    #adv.y = data.y.copy()
-    t_lag = (data.time - kwargs['lagrangian_epoch'])*kwargs['xy0_obj'].years_to_time
-    #adv.t = t_lag
-    # calculate the number of seconds between data times and epoch
-    # advect points to delta time 0
-    #adv.translate_parcel(integrator='RK4', method=kwargs['lagrangian_interpolation'], t0=0)
-    # xy0_interpolator(bounds=None, t_range=None, t_step=None)
-
-    if kwargs['reread_data'] and 'x_lag' in data.fields:
-        # we're using data that has been reread from a previous run.
-        data.assign(x_original = data.x.copy())
-        data.assign(y_original = data.y.copy())
-        data.x = data.x_lag.copy()
-        data.y = data.y_lag.copy()
-        data.fields.remove('x_lag')
-        data.fields.remove('y_lag')
-        out_args=kwargs
-        return out_args
-
-    if not kwargs['lagrangian_zero_velocity']:
-        x0 = kwargs['xy0_obj'].interp(data.x, data.y, t_lag, field='x0')
-        y0 = kwargs['xy0_obj'].interp(data.x, data.y, t_lag, field='y0')
-    else:
-        x0=data.x.copy()
-        y0=data.y.copy()
-
-    if 'move_points' in kwargs and kwargs['move_points']:
-        # use the mask data to remove data points that were measured at invalid locations
-        if mask_data is not None:
-            if mask_data.z.ndim==2:
-                temp=mask_data.interp(data.x, data.y)>0.5
-            else:
-                temp=mask_data.interp(data.x, data.y, data.time)>0.5
-            data.index(temp)
-            x0=x0[temp]
-            y0=y0[temp]
-        # save the original coordinates:
-        data.assign(x_original=data.x.copy(), y_original=data.y.copy())
-        # replace x and y with the advected coordinates
-        data.x=np.copy(x0); data.y=np.copy(y0)
-        # reindex to coordinates that are within the domain after advection
-        domain_mask = (np.abs(data.x-kwargs['xy0'][0]) <= kwargs['Wxy']/2) & \
-            (np.abs(data.y-kwargs['xy0'][1]) <= kwargs['Wxy']/2)
-        data.index(domain_mask)
-        if 'lagrangian_mask_files' in kwargs and kwargs['lagrangian_mask_files'] is not None:
-            apply_lagrangian_masks(data, data.x, data.y, mask_files=kwargs['lagrangian_mask_files'], **kwargs)
-    else:
-        # save additional x_original and y_original points
-        data.assign(x_lag=np.copy(x0), y_lag=np.copy(y0))
-        # remove data for which the advection returned NaN
-        data.index(np.isfinite(x0+y0))
-        if 'lagrangian_mask_files' in kwargs and kwargs['lagrangian_mask_files'] is not None:
-            apply_lagrangian_masks(data, data.x_lag, data.y_lag, mask_files=kwargs['lagrangian_mask_files'], **kwargs)
-    out_args=kwargs
-    return out_args
-
-def update_output_data_for_lagrangian(S, **kwargs):
-
-    # if x_lag has been assigned, it means we're doing a hybrid calculation,
-    # don't want to overwrite it
-    if 'x_lag' not in S['data'].fields:
-        # save the lagrangian displaced coordinates
-        S['data'].assign(x_lag=S['data'].x.copy())
-        S['data'].assign(y_lag=S['data'].y.copy())
-
-    # reassign the unadvected locations to the data 'x' and 'y' fields
-    if 'x_original' in S['data'].fields:
-        S['data'].x=S['data'].x_original.copy()
-        S['data'].y=S['data'].y_original.copy()
-        for field in ['x_original','y_original']:
-            S['data'].fields.remove(field)
-
-
 def interp_ds(ds, scale):
     for field in ds.fields:
         delta_xy=[(ds.x[1]-ds.x[0])/scale, (ds.y[1]-ds.y[0])/scale]
@@ -421,6 +137,7 @@ def interp_ds(ds, scale):
                 temp=pc.grid.data().from_dict({'x':ds.x, 'y':ds.y, 'z':np.squeeze(z0[:,:,epoch])})
                 zi[:,:,epoch] = temp.interp(xi, yi, gridded=True)
             return pc.grid.data().from_dict({'x':xi, 'y':yi, 'time':ds.time, field:zi})
+
 
 def save_fit_to_file(S,  filename, sensor_dict = None, dzdt_lags = None,
                      reference_epoch = 0,
@@ -535,13 +252,13 @@ def fit_altimetry(xy0=None, Width=4e4, \
             d2z_dt2_scale_file=None,\
             constraint_scaling_files=None,
             t_span=[2003, 2020],\
-            spacing={'z0':2.5e2, 'dz':5.e2, 'dt':0.5},  \
+            spacing={'z0':2.5e2, 'dz':5.e2, 'dt':0.5}, \
+            DEM_slope_bias_scale=None, \
             hemisphere=1, reference_epoch=None, \
             reread_dirs=None,\
             max_iterations=5, \
             sigma_extra_relax = False, \
             dzdt_lags=[1, 4], \
-            Edit_only=False, \
             E_slope_bias=1.e-5, \
             sensor_dict={}, \
             out_name=None, \
@@ -549,8 +266,9 @@ def fit_altimetry(xy0=None, Width=4e4, \
             bias_nsigma_iteration=3,\
             prior_edge_args=None,\
             replace=False, \
-            spring_only=False, \
             xy_bias_file=None,\
+            tide_mask_keep_val=None,\
+            tide_mask_keep_buffer=None,\
             firn_fixed=False, firn_rescale=False, \
             firn_correction=None, firn_directory=None, firn_version=None,\
             firn_grid_file=None,\
@@ -567,7 +285,6 @@ def fit_altimetry(xy0=None, Width=4e4, \
             DEM_tol=None,\
             data_sigma_max=None,\
             problem_DEM_files=None,\
-            mask_floating=False,\
             water_mask_threshold=None, \
             bm_scale=None,
             N_target=None,\
@@ -576,11 +293,11 @@ def fit_altimetry(xy0=None, Width=4e4, \
             extra_error=None,\
             repeat_res=None,\
             tide_mask_file=None,\
+            gzone_relax_scale=None,\
             error_res_scale=None,\
             avg_mask_directory=None, \
             velocity_files=None, \
             lagrangian_dict=None, \
-            shelf_only=False,\
             tide_directory=None, \
             tide_model='CATS2008', \
             tide_adjustment_file=None,
@@ -597,7 +314,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
             params=None,\
             DEM_grid_bias_params=None,\
             DEM_sigma_corr=20,\
-            THREADS=THREADS):
+            THREADS=1):
     """
         Wrapper for smooth_fit that can find data and set the appropriate parameters
     """
@@ -652,24 +369,25 @@ def fit_altimetry(xy0=None, Width=4e4, \
             temp=temp.split(':')
             constraint_scaling_maps[temp[0]]=pc.grid.data()\
                 .from_file(temp[1], bounds=[bds['x']+pad, bds['y']+pad])
+    if gzone_relax_scale is not None:
+        setup_gzone_relax( gzone_relax_scale,
+                              tide_mask_file,
+                              bds,
+                              spacing,
+                              constraint_scaling_maps)
 
-
-    if shelf_only:
-        # mask out anything that's not shelf
-        if mask_data.z.ndim==2:
-            mask_data.z *= (pc.grid.data().from_file(tide_mask_file, bounds=mask_data.bounds()).interp(mask_data.x, mask_data.y, gridded=True) > 0.1)
-        else:
-            mask_data.z *= np.tile(\
-                (pc.grid.data().from_file(tide_mask_file, bounds=mask_data.bounds())\
-                                   .interp(mask_data.x, mask_data.y, gridded=True) > 0.1)[:,:,None],
-                                   [1, 1, mask_data.shape[2]])
-        if np.all(mask_data.z==0):
-            if verbose:
-                print("shelf_only specified, and no shelf in mask, returning")
-            return None, None, None
+    apply_tide_mask_keep(tide_mask_keep_val,
+                         buffer_W=tide_mask_keep_buffer,
+                         mask_data=mask_data,
+                         tide_mask_file=tide_mask_file)
 
     if and_mask_files is not None or or_mask_files is not None:
         update_mask_data_andor(mask_data, and_mask_files, or_mask_files)
+
+    if np.all(mask_data.z==0):
+        if verbose:
+            print("no points in mask, returning")
+        return None, None, None
 
     if lagrangian_dict is not None:
         lagrangian_dict = setup_lagrangian(
@@ -691,6 +409,14 @@ def fit_altimetry(xy0=None, Width=4e4, \
             lagrangian_dict['move_points'] = True
 
     pgc_url_file=None
+    default_data_fields=['x','y','z','time','sigma','sigma_corr',
+                         'slope_mag', 'sensor','spot', 'rgt','cycle','BP']
+    data_scale_fields = None
+    if DEM_slope_bias_scale is not None:
+        data_scale_fields=['z_x','z_y']
+        default_data_fields += data_scale_fields
+        default_data_fields += ['E_scale_'+jj for jj in data_scale_fields ]
+
     if data is not None:
         sensor_dict={}
     elif reread_file is not None:
@@ -726,12 +452,12 @@ def fit_altimetry(xy0=None, Width=4e4, \
                                 target_area=W['x']*W['y'],
                                 mask_file=mask_file, \
                                 geoid_file=geoid_file, \
-                                mask_floating=mask_floating,\
                                 water_mask_threshold=water_mask_threshold, \
                                 time_range=t_span, \
                                 DEM_file=DEM_file, \
                                 DEM_dt_min=DEM_dt_min,\
                                 DEM_t_buffer=DEM_t_buffer,\
+                                DEM_slope_bias_scale=DEM_slope_bias_scale,\
                                 data_sigma_max=data_sigma_max,\
                                 pgc_url_file=pgc_url_file,\
                                 DEM_sigma_corr=DEM_sigma_corr,\
@@ -739,6 +465,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
                                 problem_DEM_files=problem_DEM_files,
                                 seg_diff_tol=seg_diff_tol,
                                 xy_bias_file=xy_bias_file)
+
 
         if sensor_dict is None:
             sensor_dict={}
@@ -757,8 +484,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
                 if field not in Di.fields:
                     Di.assign({field:np.zeros_like(Di.x)+np.nan})
 
-        data=pc.data(fields=['x','y','z','time','sigma','sigma_corr',
-                             'slope_mag', 'sensor','spot', 'rgt','cycle','BP']).from_list(D)
+        data=pc.data(fields = default_data_fields).from_list(D)
         data.assign({'day':np.floor(data.time*365.25)})
 
         if data.size==0:
@@ -791,13 +517,6 @@ def fit_altimetry(xy0=None, Width=4e4, \
             #apply_tides( tide_mask_file, tide_directory, tide_model, EPSG=EPSG)
     else:
         data, sensor_dict = reread_data_from_fits(xy0, Width, reread_dirs, template='E%d_N%d.h5')
-
-    if shelf_only and hasattr(data, 'floating'):
-        data.index(data.floating>0.1)
-        if data.size==0:
-            if verbose:
-                print("No non-floating data points found, returning")
-            return None, None, None
 
     altimeter_sensors = [item for key, item in laser_key().items()]\
         + [item for key, item in radar_key().items()]
@@ -857,9 +576,12 @@ def fit_altimetry(xy0=None, Width=4e4, \
         sensor_grid_bias_params=[]
         for sensor in DEM_sensors:
             sensor_grid_bias_params += [{'sensor':sensor, 'expected_val':0}]
-            sensor_grid_bias_params[-1].update(DEM_grid_bias_params)
-            sensor_grid_bias_params[-1].update(DEM_meta_dict[sensor])
-            sensor_grid_bias_params[-1].update({'filename':sensor_dict[sensor]})
+            try:
+                sensor_grid_bias_params[-1].update(DEM_grid_bias_params)
+                sensor_grid_bias_params[-1].update(DEM_meta_dict[sensor])
+                sensor_grid_bias_params[-1].update({'filename':sensor_dict[sensor]})
+            except Exception as e:
+                print(e)
 
     # apply any custom edits
     custom_edits(data)
@@ -869,7 +591,9 @@ def fit_altimetry(xy0=None, Width=4e4, \
         return None, None, None
 
     # assign time_corr and (for laser sensors) sigma_corr
-    assign_sigma_corr(data)
+    # (this is for ICESat and airborne sensors)
+    if 'time_corr' in bias_params:
+        assign_sigma_corr(data)
 
     avg_masks=None
     if avg_mask_directory is not None:
@@ -912,8 +636,10 @@ def fit_altimetry(xy0=None, Width=4e4, \
                      bias_params=bias_params,
                      repeat_res=repeat_res,
                      max_iterations=max_iterations,
-                     srs_proj4=SRS_proj4, VERBOSE=True, Edit_only=Edit_only,
+                     srs_proj4=SRS_proj4,
+                     VERBOSE=True,
                      data_slope_sensors=DEM_sensors,\
+                     data_scale_fields=data_scale_fields,\
                      E_slope_bias=E_slope_bias,\
                      mask_file=mask_file,\
                      mask_data=mask_data,\
@@ -954,6 +680,7 @@ def parse_inputs(argv):
     parser=argparse.ArgumentParser(description="function to fit icebridge data with a smooth elevation-change model", \
                                    fromfile_prefix_chars="@")
     parser.add_argument('--xy0', type=float, nargs=2, help="fit center location")
+    parser.add_argument('--km', action='store_true', help="if specified, coordinates for xy0 argument are interpreted as km.")
     parser.add_argument('--Width','-W',  type=float, help="fit width")
     parser.add_argument('--time_span','-t', type=str, help="time span, first year,last year AD (comma separated, no spaces)")
     parser.add_argument('--reference_epoch', type=int)
@@ -999,9 +726,9 @@ def parse_inputs(argv):
     parser.add_argument('--DEM_file', type=path, help='DEM file to use with the DEM_tol parameter and in slope error calculations')
     parser.add_argument('--DEM_tol', type=float, help='Tolerance for selecting points relative to the DEM file')
     parser.add_argument('--DEM_dt_min', type=float, help="if two DEMs are closer to time than this value, data from the one with the larger errors will be deleted")
+    parser.add_argument('--DEM_slope_bias_scale', type=str, help='if specified, the bias the surface slope from the DEM times the geolocation error')
     parser.add_argument('--data_sigma_max', type=float, help="points with sigma estimates larger than this value will be ignored")
     parser.add_argument('--problem_DEM_files', type=str, help='files listing problematic DEM files, comma separated')
-    parser.add_argument('--mask_floating', action="store_true")
     parser.add_argument('--map_dir','-m', type=path)
     parser.add_argument('--firn_directory', type=path, help='directory containing firn model')
     parser.add_argument('--firn_model', type=str, help='firn model name')
@@ -1022,8 +749,8 @@ def parse_inputs(argv):
     parser.add_argument('--lagrangian_dz_E_RMS', type=float, help='Expected RMS for moving topography')
     parser.add_argument('--lagrangian_dz_E_RMS_grad', type=float, help='Expected RMS gradient for moving topography')
     parser.add_argument('--lagrangian_zero_velocity', action='store_true', help='If set, all parameters will match the lagrangian parameters, but velocity will be set to zero')
-    parser.add_argument('--shelf_only', action='store_true', help='use only data points originally on the shelf')
     parser.add_argument('--mask_file', type=path)
+    parser.add_argument('--gzone_relax_scale', type=float, help='relax the d3z_dx2dt constraint at the grounding zone by this factor')
     parser.add_argument('--mask_zero_scale', type=float, default=10, help='constraint equations will be reduced by this factor where the mask is zero')
     parser.add_argument('--and_mask_files', type=str, nargs='+')
     parser.add_argument('--or_mask_files', type=str, nargs='+')
@@ -1034,6 +761,8 @@ def parse_inputs(argv):
     parser.add_argument('--tide_directory', type=path)
     parser.add_argument('--tide_model', type=str, help='tide model name')
     parser.add_argument('--tide_adjustment_file', type=str, help='h5 file_giving scaling for tide model')
+    parser.add_argument('--tide_mask_keep_val', type=float, help="include in the mask only points for which the tide mask matches this value")
+    parser.add_argument('--tide_mask_keep_buffer', type=float, help="buffer the mask associated with the tide_mask_keep value by this distance")
     parser.add_argument('--avg_mask_directory', type=path)
     parser.add_argument('--calc_error_file','-c', type=path)
     parser.add_argument('--calc_error_for_xy', action='store_true')
@@ -1047,6 +776,9 @@ def parse_inputs(argv):
 
     if unk:
         print("unknown arguments:"+str([jj for jj in unk if (len(jj)>0) and not jj[0]=='#']))
+
+    if args.km:
+        args.xy0 = [jj*1000 for jj in args.xy0]
 
     if args.max_mem is not None and args.max_mem > 0:
         set_memory_limit(int(args.max_mem*1024*1024*1024))
@@ -1209,7 +941,7 @@ def parse_inputs(argv):
 
 def main(argv=None):
     if argv is None:
-        argv=sys.argv
+        argv=sys.argv[1:]
 
     args=parse_inputs(argv)
     if isinstance(args, int):
@@ -1255,7 +987,6 @@ def main(argv=None):
             firn_mask_file=args.firn_mask_file,\
             calc_FAC_anomaly=args.calc_FAC_anomaly,\
             lagrangian_dict=args.lagrangian_dict,\
-            shelf_only=args.shelf_only,\
             mask_file=args.mask_file, \
             mask_zero_scale=args.mask_zero_scale, \
             and_mask_files=args.and_mask_files,\
@@ -1264,7 +995,7 @@ def main(argv=None):
             DEM_tol=args.DEM_tol,\
             DEM_t_buffer=args.DEM_t_buffer,\
             geoid_file=args.geoid_file,\
-            mask_floating=args.mask_floating,\
+            gzone_relax_scale=args.gzone_relax_scale,\
             extra_error=args.extra_error, \
             E_slope_bias=args.E_slope_bias, \
             water_mask_threshold=args.water_mask_threshold, \
@@ -1273,12 +1004,15 @@ def main(argv=None):
             tide_mask_file=args.tide_mask_file, \
             tide_model=args.tide_model, \
             tide_adjustment_file=args.tide_adjustment_file, \
+            tide_mask_keep_val=args.tide_mask_keep_val,\
+            tide_mask_keep_buffer=args.tide_mask_keep_buffer,\
             avg_mask_directory=args.avg_mask_directory, \
             dzdt_lags=args.dzdt_lags,\
             avg_scales=args.avg_scales,\
             DEM_dt_min=args.DEM_dt_min,\
             DEM_sigma_corr=args.DEM_sigma_corr,\
             DEM_grid_bias_params=args.DEM_bias_params,\
+            DEM_slope_bias_scale=args.DEM_slope_bias_scale,\
             THREADS=args.THREADS)
 
     if S is None:
@@ -1292,7 +1026,7 @@ def main(argv=None):
                              args=args)
     else:
         if 'sigma_z0' not in S['E']:
-            print("fit_altimetr.py: no sigma_z0 calculated, returning")
+            print("fit_altimetry.py: no sigma_z0 calculated, returning")
             return
 
         S['E']['sigma_z0']=interp_ds(S['E']['sigma_z0'], args.error_res_scale[0])
@@ -1307,4 +1041,4 @@ def main(argv=None):
     print(f"peak memory usage (kB)={total_memory}")
 
 if __name__=='__main__':
-    main(sys.argv)
+    main(sys.argv[1:])
