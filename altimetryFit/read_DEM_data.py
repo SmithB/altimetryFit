@@ -145,48 +145,68 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
 
     D=[]
     W_padded={coor:np.maximum(W[coor], 1.e4) for coor in ['x','y']}
+    DEM_filetimes={}
 
     for this_file in gI_files:
+        gI_dir = os.path.dirname(this_file)
         try:
             temp = pc.geoIndex().from_file(this_file, read_file=False)\
                 .query_xy_box(xy0[0]+np.array([-W_padded['x']/2, W_padded['x']/2]), xy0[1]+np.array([-W_padded['y']/2, W_padded['y']/2]), \
-                              fields=['x','y','z','sigma','time','sensor'])
-            for Di in temp:
-                if get_2m_filename(Di.filename) not in problem_DEMs:
-                    D += [Di]
-                elif VERBOSE:
-                    print(f"skipping problem DEM: {Di.filename}")
+                              get_data=False)
+                    #fields=['x','y','z','sigma','time','sensor'])
+            if temp is None:
+                continue
+            for DEM_base in temp.keys():
+                if 'plane_mask' in DEM_base:
+                    continue
+                if get_2m_filename(DEM_base) in problem_DEMs:
+                    if VERBOSE:
+                        print(f"skipping problem DEM: {DEM_base}")
+                        continue
+                full_DEM_file = os.path.join(gI_dir, DEM_base)
+                this_mod_time = os.stat(full_DEM_file).st_mtime
+                if DEM_base not in DEM_filetimes or DEM_filetimes[DEM_base][0] < this_mod_time:
+                    #if DEM_base in DEM_filetimes:
+                    #    print(DEM_base)
+                    DEM_filetimes[DEM_base] = [this_mod_time, full_DEM_file]
         except TypeError:
             if DEBUG:
                 print(f"No data found for file: {this_file}")
-    for Di in D:
-        Di.crop([xy0[0]+np.array([-W['x']/2, W['x']/2]), xy0[1]+np.array([-W['y']/2, W['y']/2])])
+    DEM_res = np.nan
+    for file_time in DEM_filetimes.values():
+        this_DEM_time = pc.grid.DEM_year(file_time[1])
+        if time_range is not None:
+            if this_DEM_time  < time_range[0] or this_DEM_time > time_range[1]:
+                continue
+        temp = pc.grid.data().from_file(file_time[1], bounds = [xy0[0]+np.array([-W['x']/2, W['x']/2]), xy0[1]+np.array([-W['y']/2, W['y']/2])])
+        if 'z' not in temp.fields:
+            continue
+        temp.time = this_DEM_time
+        try:
+            temp.assign(sigma = temp.z[:,:,1])
+            temp.z = temp.z[:,:,0]
+        except IndexError:
+            print(f"problem indexing {temp.filename}")
+            continue
+        if not np.isfinite(DEM_res):
+            if len(temp.x) >= 2:
+                DEM_res=temp.x[1]-temp.x[0]
+        D.append( temp.as_points())
+
     if data_sigma_max is not None:
         for Di in D:
             Di.index(Di.sigma < data_sigma_max)
 
-    DEM_res=np.nan
-    for Di in D:
-        DEM_res = np.nanmedian(np.diff(np.unique(Di.x)))
-        if np.isfinite(DEM_res):
-            break
-    print("DEM_res is " + str(DEM_res))
-
-    if time_range is not None:
-        D = [Di  for Di in D if (Di.size > 0 ) and not (
-             (np.max(Di.time) < time_range[0]) or \
-                (np.min(Di.time) > time_range[1])) ]
+    if VERBOSE:
+        print("DEM_res is " + str(DEM_res))
 
     if not include_xtrack:
-        if VERBOSE:
-            print('before removing xtrack:'+str(len(D)))
         xtrack_re=re.compile('_W(\d)W(\d)_')
         D = [ Di for Di in D if xtrack_re.search(Di.filename) is None ]
-        if VERBOSE:
-            print('\t after:'+str(len(D)))
     if target_area is None:
         target_area=W['x']*W['y']
-
+    if VERBOSE:
+        print(f"\tread_DEM_data: found {len(D)} DEMs")
     if D is None:
         return None, sensor_dict
 
@@ -220,11 +240,14 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
     # N_target points
     if N_target is not None:
         N_total = np.sum([np.sum(np.isfinite(Di.z)) for Di in D])
+        if N_total < 2:
+            return None, sensor_dict, None
         N_unique = len(np.unique(np.round(np.concatenate([Di.x+1j*Di.y for Di in D])/DEM_res)))
         overlap = N_total/N_unique # average number of repeats per cell
         if N_total > N_target:
             blockmedian_scale = np.maximum(blockmedian_scale, np.sqrt(target_area/(N_target/overlap)))
-            print(f'\t read_DEM_data: DEM blockmedian scale = {np.round(blockmedian_scale)}')
+            if VERBOSE:
+                print(f'\t read_DEM_data: DEM blockmedian scale = {np.round(blockmedian_scale)}')
 
     # copy valid DEMs into a temporary list
     D_temp=[]
@@ -293,11 +316,15 @@ def regen_DEM_meta(xy0, W, data, save_file, gI_files, read_basis_vectors=True,
     for this_file in gI_files:
         pad =np.array([-W['x']/2-5.e4, W['x']/2+5.e4])
         try:
-            file_list += pc.geoIndex().from_file(this_file, read_file=False)\
-                .query_xy_box(xy0[0]+pad,
-                              xy0[1]+pad, \
-                              get_data=False).keys()
-        except Exception:
+            query = pc.geoIndex().from_file(this_file, read_file=False)\
+                    .query_xy_box(xy0[0]+pad,
+                                  xy0[1]+pad, \
+                                      get_data=False, full_path=True)
+            #file_list += [os.path.join(os.path.dirname(this_file), ff)
+            #           for ff in query.keys()]
+            file_list += list(query.keys())
+        except Exception as e:
+            print(e)
             if VERBOSE:
                 print(f"regen_DEM_meta : no DEMs fround for {this_file}")
             pass
