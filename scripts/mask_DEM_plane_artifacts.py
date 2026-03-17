@@ -3,10 +3,8 @@
 
 import numpy as np
 import pointCollection as pc
-import scipy.ndimage as snd
+import scipy.ndimage
 import sys
-import scipy.stats as sps
-import shutil
 import os
 
 def histogram_peak_stats(x, ctr=None, x_max=None, sided=1):
@@ -175,7 +173,7 @@ def select_slope_mask_by_large_scale_fit(LS2, xy0, VERBOSE=False):
     # recalculate rms_dz after shift for mean non-outlier offset
     rms_dz = np.sqrt((LS2['dz_REF']-dz_bar)**2 + LS2['sigma_dz']**2)
     if VERBOSE:
-        print(f"dz_bar={dz_bar:2.3f}, p84_dz_ref={sps.scoreatpercentile(LS2['rms_dz'], 84)}, p84_dz_ref_corr={sps.scoreatpercentile(rms_dz, 84)}")
+        print(f"dz_bar={dz_bar:2.3f}, p84_dz_ref={np.percentile(LS2['rms_dz'], 84)}, p84_dz_ref_corr={np.percentile(rms_dz, 84)}")
 
     ctr, whm_rms_dz= histogram_peak_stats(rms_dz, sided=2)
     outlier_rms_dz = np.maximum(10, ctr+3*whm_rms_dz)
@@ -258,13 +256,13 @@ def map_stats(D, l_stats, label_dict, val):
         temp.z.ravel()[jj] = val[ii]
     return temp
 
-def main(argv):
+def main(argv=None):
     """
     Make a planar artifact mask file for a DEM file.
 
     Parameters
     ----------
-    argv : iterable
+    argv : iterable, optional
         arguments.
 
     Returns
@@ -272,6 +270,9 @@ def main(argv):
     None.
 
     """
+    if argv is None:
+        argv=sys.argv
+
     import argparse
     parser=argparse.ArgumentParser(description="mask planar artifacts in a DEM", \
                                    fromfile_prefix_chars="@")
@@ -320,7 +321,7 @@ def main(argv):
     Nk=np.ceil(args.dx/(D.x[1]-D.x[0]))
     kx, ky = np.meshgrid(np.arange(-Nk, Nk+0.1), np.arange(-Nk, Nk+1))
     K = (kx**2+ky**2) <= Nk**2
-    mask.z = snd.binary_dilation(mask.z, K)
+    mask.z = scipy.ndimage.binary_dilation(mask.z, K)
 
 
     mask.to_geotif(args.out_file, srs_epsg=args.EPSG)
