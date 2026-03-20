@@ -33,7 +33,6 @@ import LSsurf as LS
 import glob
 import pointCollection as pc
 import geopandas
-import LSsurf as LS
 import json
 
 def get_residuals(DEM_file):

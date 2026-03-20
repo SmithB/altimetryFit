@@ -17,6 +17,7 @@ import resource
 import os
 import sys
 import re
+import altimetryFit as aF
 
 threads_re=re.compile(r"THREADS=(\S+)")
 n_threads="1"
@@ -177,15 +178,21 @@ def save_fit_to_file(S,  filename, sensor_dict = None, dzdt_lags = None,
                 h5f['/meta/sensors'].attrs['sensor_%d' % key]=sensor_dict[key]
         if 'sensor_bias_grids' in S['m'] and 'grid_bias' not in h5f:
             h5f.create_group('/grid_bias')
-        if 'jitter_bias_grids' in S['m'] and 'jitter_bias' not in h5f:
+        if 'jitter_bias' in S['m'] and 'jitter_bias' not in h5f:
             h5f.create_group('/jitter_bias')
+
+        def safer_JSON_encoder(obj):
+            try:
+                return json.JSONEncoder().default(obj)
+            except TypeError:
+                return(str(obj))
         if args is not None:
             if 'input_args' not in h5f['/meta/']:
                 h5f.create_group('/meta/input_args')
                 for name, val in args.__dict__.items():
                     if val is not None:
                         if isinstance(val, dict):
-                            val=json.dumps(val)
+                            val=json.dumps(val, default= safer_JSON_encoder)
                         try:
                             h5f['/meta/input_args'].attrs[name]=val
                         except Exception as e:
@@ -195,8 +202,8 @@ def save_fit_to_file(S,  filename, sensor_dict = None, dzdt_lags = None,
     if 'sensor_bias_grids' in S['m']:
         for name, ds in S['m']['sensor_bias_grids'].items():
                 ds.to_h5(filename, group='/grid_bias/'+name)
-    if 'jitter_bias_grids' in S['m']:
-        for name, ds in S['m']['jitter_bias_grids'].items():
+    if 'jitter_bias' in S['m']:
+        for name, ds in S['m']['jitter_bias'].items():
                 ds.to_h5(filename, group='/jitter_bias/'+name)
     for key , ds in S['m'].items():
         if isinstance(ds, pc.grid.data):
@@ -441,6 +448,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
                            't':W['t']}
         else:
             this_xy0, this_W = [xy0, W]
+
         if DEM_grid_bias_params is not None and 'jitter_url_list_file' in DEM_grid_bias_params:
             pgc_url_file=DEM_grid_bias_params['jitter_url_list_file']
         D, sensor_dict, DEM_meta_dict = read_optical_data(\
@@ -882,7 +890,14 @@ def parse_inputs(argv):
                         args.DEM_bias_params[key]=float(val.split('#')[0])
                     except ValueError:
                         # if not, assume str
-                        args.DEM_bias_params[key]=val.split('#')[0]
+                        this_val = val.split('#')[0]
+                        if key == 'setup_function' or key == 'parsing_function':
+                            # two kinds of functions get passed, they should
+                            # come from altimetryFit.bias_functions
+                            args.DEM_bias_params[key] \
+                                = getattr(aF.bias_functions, this_val)
+                        else:
+                            args.DEM_bias_params[key] = this_val
                 except Exception:
                     print("problem with DEM_bias_params line\n"+line)
 

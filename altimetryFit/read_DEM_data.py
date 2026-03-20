@@ -12,7 +12,7 @@ import json
 import glob
 import h5py
 import re
-import LSsurf as LS
+import altimetryFit as aF
 from .get_ATC_xform import get_DEM_ATC_xform
 from LSsurf.subset_DEM_stack import subset_DEM_stack
 from .remove_overlapping_DEM_data import remove_overlapping_DEM_data
@@ -273,7 +273,7 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
 
         # get metadata
         if read_basis_vectors:
-            meta=LS.get_pgc(Di.filename, pgc_url_file, targets=['meta'])['meta']
+            meta=aF.get_pgc(Di.filename, pgc_url_file, targets=['meta'])['meta']
             meta['xform'], meta['poly'] = get_DEM_ATC_xform(meta)
         meta['sensor'] = this_sensor_number
         meta['filename'] = Di.filename
@@ -341,7 +341,7 @@ def regen_DEM_meta(xy0, W, data, save_file, gI_files, read_basis_vectors=True,
             if 'SETSM' not in thebase:
                 continue
             if read_basis_vectors:
-                meta=LS.get_pgc(file_dict[thebase], pgc_url_file, targets=['meta'])['meta']
+                meta=aF.get_pgc(file_dict[thebase], pgc_url_file, targets=['meta'])['meta']
                 meta['xform'], meta['poly'] = get_DEM_ATC_xform(meta)
             meta['sensor'] = this_sensor_number
             meta['filename'] = file_dict[thebase]
