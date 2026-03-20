@@ -13,6 +13,14 @@ April 2023: SmithB merged lagrangian code into fit_altimetry.py
 January 2026: Lagrangian update functions moved to lagrangian_functions.py
 """
 
+from altimetryFit.lagrangian_functions import setup_lagrangian, \
+    update_data_for_lagrangian, \
+    update_output_data_for_lagrangian,\
+    setup_lagrangian_fit,\
+    parse_lagrangian_fit
+import json
+import glob
+import h5py
 import resource
 import os
 import sys
@@ -58,11 +66,6 @@ from altimetryFit.read_CS2_data import read_CS2_data, radar_key
 from altimetryFit.apply_tides import apply_tides
 from altimetryFit.mask_functions import mask_data_by_year, update_mask_data_andor, setup_gzone_relax, apply_tide_mask_keep
 
-import h5py
-import sys
-import glob
-import json
-from altimetryFit.lagrangian_functions import setup_lagrangian, update_data_for_lagrangian, update_output_data_for_lagrangian
 
 def set_memory_limit(max_bytes):
     '''
@@ -328,8 +331,8 @@ def fit_altimetry(xy0=None, Width=4e4, \
     print("fit_OIB: working on %s" % out_name)
 
     # default:
-    lagrangian_coords=None
-
+    lagrangian_coords = None
+    sensor_grid_bias_params = []
     SRS_proj4=get_SRS_proj4(hemisphere)
     bias_model_args={}
 
@@ -411,6 +414,13 @@ def fit_altimetry(xy0=None, Width=4e4, \
             E_RMS0['lagrangian_dz'] = lagrangian_dict['lagrangian_dz_E_RMS']
             E_RMS0['lagrangian_dzdx'] = lagrangian_dict['lagrangian_dz_E_RMS_grad']
             lagrangian_coords=['y_lag','x_lag']
+            sensor_grid_bias_params.append({
+                'name' : 'lagrangian_dz',
+                'sensor' : None,
+                'coords' : lagrangian_coords,
+                'setup_function' : setup_lagrangian_fit,
+                'parsing_function' : parse_lagrangian_fit
+                })
         else:
             # move points by default
             lagrangian_dict['move_points'] = True
@@ -451,6 +461,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
 
         if DEM_grid_bias_params is not None and 'jitter_url_list_file' in DEM_grid_bias_params:
             pgc_url_file=DEM_grid_bias_params['jitter_url_list_file']
+
         D, sensor_dict, DEM_meta_dict = read_optical_data(\
                                 this_xy0, this_W,\
                                 GI_files=GI_files, \
@@ -579,7 +590,6 @@ def fit_altimetry(xy0=None, Width=4e4, \
             print("for %s found %d data" %(sensor, np.sum(data.sensor==val)))
     print("for DEMs, found %d data" % np.sum(np.in1d(data.sensor, np.array(DEM_sensors))))
 
-    sensor_grid_bias_params=None
     if DEM_grid_bias_params is not None:
         sensor_grid_bias_params=[]
         for sensor in DEM_sensors:
@@ -645,7 +655,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
                      repeat_res=repeat_res,
                      max_iterations=max_iterations,
                      srs_proj4=SRS_proj4,
-                     VERBOSE=True,
+                     VERBOSE=verbose,
                      data_slope_sensors=DEM_sensors,\
                      data_scale_fields=data_scale_fields,\
                      E_slope_bias=E_slope_bias,\
@@ -664,7 +674,6 @@ def fit_altimetry(xy0=None, Width=4e4, \
                      avg_masks=avg_masks, \
                      sigma_extra_keys=sigma_extra_keys,\
                      sensor_grid_bias_params=sensor_grid_bias_params,\
-                     lagrangian_coords=lagrangian_coords,\
                      converge_tol_frac_TSE=converge_tol_frac,
                      THREADS=THREADS)
 
@@ -872,6 +881,7 @@ def parse_inputs(argv):
     if args.bias_params is not None and " " in args.bias_params[0]:
         args.bias_params=args.bias_params[0].split(" ")
 
+    # read in the DEM grid bias params.  These will be applied to each DEM
     args.DEM_bias_params=None
     if args.DEM_grid_bias_params_file is not None:
         # DEM_bias_params file should include key=value lines, with keys:

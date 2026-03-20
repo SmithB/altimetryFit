@@ -13,21 +13,76 @@ import os
 import glob
 import h5py
 import pointAdvection
+import LSsurf
+
 
 def get_xy01_grids(interpolator_save_files, bounds):
-    SPY=365.25*24*3600
-    xy0_obj=pc.grid.mosaic().from_list(interpolator_save_files, bounds=bounds, group='xy0')
-    xy1_obj=pc.grid.mosaic().from_list(interpolator_save_files, bounds=bounds, group='xy1')
-    xy0_obj.years_to_time=SPY
-    with h5py.File(interpolator_save_files[0],'r') as h5f:
+
+    SPY = 365.25*24*3600
+    xy0_obj = pc.grid.mosaic().from_list(
+        interpolator_save_files, bounds=bounds, group='xy0')
+    xy1_obj = pc.grid.mosaic().from_list(
+        interpolator_save_files, bounds=bounds, group='xy1')
+    xy0_obj.years_to_time = SPY
+    with h5py.File(interpolator_save_files[0], 'r') as h5f:
         try:
-            if h5f['xy0']['t'].attrs['units']=='years':
-                print("years!")
+            if h5f['xy0']['t'].attrs['units'] == 'years':
                 xy0_obj.years_to_time = 1
                 xy1_obj.years_to_time = 1
         except:
             pass
     return xy0_obj, xy1_obj
+
+def setup_lagrangian_fit(data, grids, G_data, constraint_ops_list, args=None, **params):
+
+    bds = {coord: args['ctr'][coord] +
+           np.array([-0.5, 0.5])*args['W'][coord] for coord in ('x', 'y', 't')}
+
+    grids['lagrangian_dz'] = fd_grid([bds['y'], bds['x']],
+                                     [args['spacing']['lagrangian_dz'],
+                                         args['spacing']['lagrangian_dz']],
+                                     name='lagrangian_dz', col_0=G_data.col_N,
+                                     srs_proj4=args['srs_proj4'])
+
+    E_RMS = args['E_RMS']
+
+    coords = [getattr(data, field) for field in args['lagrangian_coords']]
+    G_data.add(
+        LSsurf.lin_op(grids['lagrangian_dz'], name='interp_lagrangian_dz')
+        .interp_mtx([coords], bounds_error=False))
+
+    if 'lagrangian_dz' in E_RMS and E_RMS['lagrangian_dz'] is not None:
+        root_A_lag = np.sqrt(
+            grids['lagrangian_dz'].delta[0]*grids['lagrangian_dz'].delta[1])
+        lag_dz = LSsurf.lin_op(
+            grids['lagrangian_dz'],
+            name='lagrangian_rms')\
+            .one(DOF='lagrangian_dz')
+        lag_dz.expected = np.zeros(lag_dz.N_eq) + \
+            E_RMS['lagrangian_dz']/root_A_lag
+        constraint_ops_list += [lag_dz]
+
+    if 'lagrangian_dzdx' in E_RMS and E_RMS['lagrangian_dzdx'] is not None:
+        root_A_lag = np.sqrt(
+            grids['lagrangian_dz'].delta[0]*grids['lagrangian_dz'].delta[1])
+        grad_lag_dz = LSsurf.lin_op(
+            grids['lagrangian_dz'],
+            name='lagrangian_rms_grad')\
+            .grad(DOF='lagrangian_dz')
+        grad_lag_dz.expected = np.zeros(
+            grad_lag_dz.N_eq) + E_RMS['lagrangian_dzdx']/root_A_lag
+        constraint_ops_list += [grad_lag_dz]
+
+def parse_lagrangian_fit(m0, G_data, grids):
+    m = {}
+    shp = grids['lagrangian_dz'].shape
+    m['lagrangian_dz'] = pc.grid.data().from_dict({
+        'x': grids['lagrangian_dz'].ctrs[1],
+        'y': grids['lagrangian_dz'].ctrs[0],
+        'dz': np.reshape(m0[G_data.TOC['cols']['lagrangian_dz']], shp),
+        'cell_area': grids['lagrangian_dz'].cell_area,
+        'mask': grids['lagrangian_dz'].mask})
+    return m
 
 def setup_lagrangian(velocity_files=None, velocity_type = None, lagrangian_epoch=None, reference_epoch=None,
     SRS_proj4=None, xy0=None, Wxy=None, t_span=None, spacing=None, verbose=False,
