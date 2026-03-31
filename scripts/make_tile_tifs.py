@@ -25,7 +25,7 @@ def make_tile_tifs(dz_file, epsg, verbose=True, mask_w = None, geoid_file=None, 
     gtif_kwargs={'srs_epsg':epsg}
     tif_dir=os.path.join(input_dir,'tif')
     try:
-        os.mkdir(tif_dir)
+        os.makedirs(tif_dir, exist_ok=True)
     except FileExistsError:
         pass
     groups = ['z0','dz0dx', 'count','epoch_count','dzdt','sigma_dzdt',  'epoch_count','dz0_tot_dx']
@@ -33,7 +33,7 @@ def make_tile_tifs(dz_file, epsg, verbose=True, mask_w = None, geoid_file=None, 
         groups += ['sigma_z0']
     for group in groups:
         if not os.path.isdir(os.path.join(tif_dir, group)):
-            os.mkdir(os.path.join(tif_dir, group))
+            os.makedirs(os.path.join(tif_dir, group), exist_ok=True)
 
 
     if verbose:
@@ -85,7 +85,7 @@ def make_tile_tifs(dz_file, epsg, verbose=True, mask_w = None, geoid_file=None, 
     if os.path.isfile(dzL_file):
         for group in ['dzL','dzLdx','dz0_tot_dx']:
             if not os.path.isdir(os.path.join(tif_dir, group)):
-                os.mkdir(os.path.join(tif_dir, group))
+                os.makedirs(os.path.join(tif_dir, group), exist_ok=True)
 
         dzL=pc.grid.data().from_h5(dzL_file, group='lagrangian_dz', field='dz')
         if 'mask' in z0.fields:
