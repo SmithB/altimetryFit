@@ -186,11 +186,11 @@ def setup_DEM_jitter_fit(data, filename, col_0=0,
     # local coordinate system.  For example, in the lagrangian case, the right
     # coordinates are ['x_original', 'y_original']
     if 'coords' not in params or params['coords'] is None:
-        coords = np.c_[D.x, D.y]
+        coords = [D.x, D.y]
     else:
-        coords = np.c_[getattr(D, params['coords'][0]),
+        coords = [getattr(D, params['coords'][0]),
                               getattr(D, params['coords'][1])]
-    xy_atc = (coords - xform['origin']) @ xform['basis_vectors']
+    xy_atc = ( np.c_[*coords] - xform['origin']) @ xform['basis_vectors']
 
     # Along-track nodes:
     local_coord=xy_atc[:, local_coord_index]
@@ -203,7 +203,7 @@ def setup_DEM_jitter_fit(data, filename, col_0=0,
     grid.col_N = grid.col_0 + grid.N_nodes
 
     # data fit
-    Gd = LS.lin_op( grid = grid, name=name).interp_mtx([D.x, D.y],
+    Gd = LS.lin_op( grid = grid, name=name).interp_mtx(coords,
                                                        dims=[local_coord_index])
     if not skip_plane > 0:
         # plane fit
@@ -212,7 +212,8 @@ def setup_DEM_jitter_fit(data, filename, col_0=0,
         cc=np.zeros_like(rr)+Gd.col_N
         G_plane.r = np.c_[rr, rr, rr]
         G_plane.c = np.c_[cc+0, cc+1, cc+2]
-        G_plane.v = np.c_[(D.x-xform['origin'][0])/1000, (D.y-xform['origin'][1])/1000, np.ones_like(rr)]
+        G_plane.v = np.c_[(coords[0]-xform['origin'][0])/1000,
+                          (coords[1]-xform['origin'][1])/1000, np.ones_like(rr)]
         G_plane.N_eq=Gd.shape[0]
         G_plane.ravel()
         G_plane.__update_size_and_shape__()
