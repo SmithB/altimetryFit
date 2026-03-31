@@ -424,6 +424,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
         else:
             # move points by default
             lagrangian_dict['move_points'] = True
+            DEM_grid_bias_params['coords'] = ['x_original','y_original']
 
     pgc_url_file=None
     default_data_fields=['x','y','z','time','sigma','sigma_corr',
@@ -442,8 +443,11 @@ def fit_altimetry(xy0=None, Width=4e4, \
         #xy0=[float(re_match.group(ii))*1000 for ii in [1, 2]]
         xy0=[ctr['x'], ctr['y']]
         data=pc.data().from_h5(reread_file, group='data')
-        #TEST: crop the data in case we're rereading subsets
-        data.crop((xy0[0]+np.array([-1, 1])*W['x']/2, xy0[1]+np.array([-1, 1])*W['y']/2))
+        if lagrangian_dict is None or not lagrangian_dict['move_points']:
+            #crop the data in case we're rereading subsets, skip if this is a full lagrangian fit.
+            if verbose:
+                print("fit_altimetry.py: cropping data to model domain")
+            data.crop((xy0[0]+np.array([-1, 1])*W['x']/2, xy0[1]+np.array([-1, 1])*W['y']/2))
         sensor_dict=make_sensor_dict(reread_file, data)
         DEM_meta_dict={}
         if 'DEM' in GI_files:
@@ -590,6 +594,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
             print("for %s found %d data" %(sensor, np.sum(data.sensor==val)))
     print("for DEMs, found %d data" % np.sum(np.in1d(data.sensor, np.array(DEM_sensors))))
 
+    # Create a sensor_grid_bias_param structure for each sensor
     if DEM_grid_bias_params is not None:
         sensor_grid_bias_params=[]
         for sensor in DEM_sensors:
@@ -682,6 +687,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
 
     if lagrangian_dict is not None and S['data'] is not None and S['data'].size > 0:
         update_output_data_for_lagrangian(S, **lagrangian_dict)
+        data=S['data']
 
     return S, data, sensor_dict
 
