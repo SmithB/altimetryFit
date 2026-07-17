@@ -67,7 +67,7 @@ def get_ATC_xform(filename, url_list_file, params=None):
 
     return xform, poly
 
-def parse_jitter_stripe_bias_grids(m0, G_data, grids):
+def parse_jitter_stripe_bias_grids(m0, G_data, grids, sigma=False):
     """
     Extract the jitter and stripe bias grids from a model vector
 
@@ -93,17 +93,23 @@ def parse_jitter_stripe_bias_grids(m0, G_data, grids):
                      re.compile('sensor_.*_stripe')]
     m={}
     for key, cols in G_data.TOC['cols'].items():
+        if sigma:
+            out_key = 'sigma_'+key
+            out_field='sigma_z'
+        else:
+            out_key = key
+            out_field='z'
         skip=True
         for sensor_bias_re in sensor_bias_res:
             if sensor_bias_re.search(key) is not None:
                 skip=False
         if skip:
             continue
-        m[key]=pc.grid.data().from_dict({
-            'x':grids[key].ctrs[0],\
-            'y':np.array([0]),\
-            'z':np.reshape(m0[cols], grids[key].shape)})
-        m[key].xform=grids[key].xform
+        m[out_key]=pc.grid.data().from_dict({
+            'x' : grids[key].ctrs[0],\
+            'y' : np.array([0]),\
+             out_field : np.reshape(m0[cols], grids[key].shape)})
+        m[out_key].xform=grids[key].xform
     return m
 
 def setup_DEM_jitter_fit(data, filename, col_0=0,
@@ -236,6 +242,51 @@ def setup_DEM_jitter_fit(data, filename, col_0=0,
 
 
     return Gd, constraint_list, xform, grid, xy_atc, poly
+
+
+def parse_DEM_bias_params_file(filename):
+    """
+    Parse a DEM_bias_params file into a dict of key=value pairs
+
+    Parameters
+    ----------
+    filename : str
+        File containing key=value lines.  Keys prefixed with 'jitter_' or
+        'stripe_' are kwargs for setup_DEM_jitter_fit; unprefixed keys
+        (spacing, expected_rms, expected_rms_grad2) are for the generic
+        sensor-grid bias fit.
+
+    Returns
+    -------
+    params : dict
+        Parsed parameters.  Numeric values are floats; 'setup_function' and
+        'parsing_function' values are resolved to functions in
+        altimetryFit.bias_functions; other values are left as strings.
+    """
+    params = {}
+    with open(filename, 'r') as fh:
+        for line in fh:
+            if len(line.rstrip()) == 0:
+                continue
+            try:
+                if line[0] == "#":
+                    continue
+                key, val = line.rstrip().split('=')
+                try:
+                    # is val a float?
+                    params[key] = float(val.split('#')[0])
+                except ValueError:
+                    # if not, assume str
+                    this_val = val.split('#')[0]
+                    if key == 'setup_function' or key == 'parsing_function':
+                        # two kinds of functions get passed, they should
+                        # come from altimetryFit.bias_functions
+                        params[key] = getattr(altimetryFit.bias_functions, this_val)
+                    else:
+                        params[key] = this_val
+            except Exception:
+                print("problem with DEM_bias_params line\n"+line)
+    return params
 
 
 def setup_jitter_stripe_fit(data, grids, G_data, constraint_op_list, args, **params):
