@@ -97,11 +97,11 @@ def read_ATM_ICESSN(xy0, W, gI_files, sensor=3.5, track_identifier=None):
                           sigma_corr = 0.025 + np.zeros_like(Di.time))
                 Di.sigma=np.sqrt(Di.sigma**2 + 0.05**2 + (4*Di.slope_mag)**2)
                 if track_identifier is not None:
-                    by_track_id = np.in1d(Di.track_identifier, track_identifier)
+                    by_track_id = np.isin(Di.track_identifier, track_identifier)
                     # in some ICESSN there are no nadir points- in these cases,
                     # track 2 is the best option
                     if not np.any(by_track_id) and np.all(track_identifier==0):
-                        by_track_id = np.in1d(Di.track_identifier, np.array([2]))
+                        by_track_id = np.isin(Di.track_identifier, np.array([2]))
                     Di.index(by_track_id)
             D0 += temp
     return D0

@@ -319,10 +319,10 @@ def regen_DEM_meta(xy0, W, data, save_file, gI_files, read_basis_vectors=True,
             query = pc.geoIndex().from_file(this_file, read_file=False)\
                     .query_xy_box(xy0[0]+pad,
                                   xy0[1]+pad, \
-                                      get_data=False, full_path=True)
-            #file_list += [os.path.join(os.path.dirname(this_file), ff)
-            #           for ff in query.keys()]
-            file_list += list(query.keys())
+                                      get_data=False,
+                                      full_path=True)
+            if query is not None:
+                file_list += list(query.keys())
         except Exception as e:
             print(e)
             if VERBOSE:

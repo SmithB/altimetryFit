@@ -162,7 +162,7 @@ def read_CS2_data(xy0, W, index_files, apply_filters=True, DEM_file=None,
         D += [read_swath_data(xy0, W, index_files['swath'], apply_filters=apply_filters, DEM=DEM, bias_lookup_dir=bias_lookup_dir)]
     # eliminate Nonetype objects within D
     D = [Di for Di in D if Di is not None]
-    
+
     if DEM_file is not None:
         for Di in D:
             Di.assign(DEM=DEM.interp(Di.x, Di.y))
@@ -181,7 +181,7 @@ def read_CS2_data(xy0, W, index_files, apply_filters=True, DEM_file=None,
                          'CS2_known_bad_orbits.json'), 'r') as fh:
                 bad_orbits=json.load(fh)[1]#['bad orbits']
             for Di in D:
-                Di.index( ~np.in1d(Di.abs_orbit.astype(int), np.array(bad_orbits, dtype='int')))
+                Di.index( ~np.isin(Di.abs_orbit.astype(int), np.array(bad_orbits, dtype='int')))
         except FileNotFoundError:
             print("\t\tno bad-orbits file found")
 
