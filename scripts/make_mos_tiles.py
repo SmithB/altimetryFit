@@ -50,7 +50,7 @@ def make_fields(max_coarse=40000, max_lag=1, compute_lags=False, \
 
     return fields
 
-def make_tile_centers(region_dir, W):
+def make_tile_centers(region_dir, W, R_max=None):
 
 
     tile_ctr_file=os.path.join(region_dir,f'{int(W/1000)}km_tile_list.txt')
@@ -76,6 +76,19 @@ def make_tile_centers(region_dir, W):
 
     xy0=np.c_[tile_list]*1000
     xyc=pc.unique_by_rows(np.floor(xy0/W)*W + W/2)
+
+    if R_max is not None:
+        import shapely
+        pad_x = np.array([-1, -1, 1, 1, -1])*W/2
+        pad_y = np.array([-1, 1, 1, -1, -1])*W/2
+        theta = np.arange(0, 6.28, 0.1)
+        circle = shapely.Polygon(np.c_[R_max*np.cos(theta), R_max*np.sin(theta)])
+        keep = np.zeros(xyc.shape[0], dtype=bool)
+        for row, xyi in enumerate(xyc):
+            if shapely.Polygon(np.c_[xyi[0]+pad_x, xyi[1]+pad_y]).intersects(circle):
+                keep[row]=True
+        xyc=xyc[keep,:]
+
     with open(tile_ctr_file,'w') as fh:
         for line in xyc:
             fh.write(str(line[0])+' '+str(line[1])+'\n')
@@ -104,6 +117,10 @@ def main():
     parser.add_argument('--pboss', action='store_true')
     parser.add_argument('--feather', type=float)
     parser.add_argument('--xy0', type=float, nargs=2, help='if specified, provide the command for the tile that contains this point')
+    parser.add_argument('--km', action='store_true', help='specifies that xy0 is in km')
+    parser.add_argument('--R_max', type=float, help='make only tiles that intersect this radius')
+    parser.add_argument('--mask_w', type=float, help="if specified, grid cells farther than this distance from a datapoint will be marked as invalid.")
+    parser.add_argument('--EPSG', type=int, help="EPSG for output tifs")
     args, _=parser.parse_known_args()
 
     out_W=args.width
@@ -111,6 +128,9 @@ def main():
 
     if not (args.prelim or args.matched):
         raise ValueError("Need to specify either prelim or matched argument")
+
+    if args.xy0 is not None and args.km:
+        args.xy0 = [float(jj)*1000 for jj in args.xy0]
 
     if args.feather is None:
         # amount by which each tile overlaps its neighbors
@@ -130,13 +150,14 @@ def main():
         xyc = [tuple([(np.floor(jj/args.width)+0.5)
                       * args.width for jj in args.xy0])]
     else:
-        xyc = make_tile_centers(in_dir, args.width)
+        xyc = make_tile_centers(in_dir, args.width, R_max=args.R_max)
 
     tile_sub=f'{int(args.width/1000)}km_tiles'
 
     if args.out_dir is None:
         args.out_dir=in_dir
     tile_dir_out=os.path.join(args.out_dir, tile_sub)
+
     if not os.path.isdir(tile_dir_out):
         os.mkdir(tile_dir_out)
 
@@ -153,6 +174,9 @@ def main():
         for sub in ['queue','running','done','logs']:
             if not os.path.isdir(os.path.join(run_dir, sub)):
                 os.mkdir(os.path.join(run_dir, sub))
+        if args.environment is not None:
+            with open("par_run/worker_env",'w') as fh:
+                fh.writelines([f"CONDA_ENV={args.environment}"])
 
     non_sigma_fields={}
     sigma_fields={}
@@ -177,11 +201,20 @@ def main():
             if args.environment is not None:
                 fh.write(f'source activate {args.environment}\n')
             for group in fields.keys():
-                group_spacing=re.compile('(\d+)m').search(group)
+                out_sub=os.path.join(tile_sub, group)
+                out_dir = os.path.join(tile_dir_out, group)
+                if not os.path.isdir(out_dir):
+                    os.mkdir(out_dir)
+                out_file = os.path.join(out_sub, f"{group}{tile_bounds_1km}.h5")
+                if group == "dz":
+                    dz_file = out_file
+
+                group_spacing=re.compile(r'(\d+)m').search(group)
                 if group_spacing is not None:
                     group_spacing=group_spacing.group(1)
                 pad=args.pad
                 feather=args.feather
+
                 spacing_str=""
                 if group_spacing is not None:
                     if int(group_spacing) > args.W/2:
@@ -190,18 +223,26 @@ def main():
                         feather=0
                     if group_spacing > args.tile_W-(2*pad):
                         pad=0
-                out_sub=os.path.join(tile_sub, group)
-                out_dir = os.path.join(tile_dir_out, group)
-                if not os.path.isdir(out_dir):
-                    os.mkdir(out_dir)
-                out_file = os.path.join(out_sub, f"{group}{tile_bounds_1km}.h5")
+
                 fh.write("#\n")
                 if args.prelim:
-                    fh.write(f"make_mosaic.py -v -w -d {in_dir} -g 'prelim/E*.h5' -r {search_bounds_str} -f {feather} -p {pad} -c {tile_bounds_str} -G {group} -F {sigma_fields[group]+non_sigma_fields[group]} -O {out_file} {spacing_str}\n")
+                    these_fields = ' '.join([sigma_fields[group], non_sigma_fields[group]])
+                    fh.write(f"make_mosaic.py -v -w -d {in_dir} -g 'prelim/E*.h5' -r {search_bounds_str}" 
+                             + f" -f {feather} -p {pad} -c {tile_bounds_str}" 
+                             + f" -G {group} -F {these_fields} -O {out_file} {spacing_str}\n")
                 elif args.matched:
-                    fh.write(f"make_mosaic.py -v -w -R -d {in_dir} -g 'matched/E*.h5' -r {search_bounds_str} -f {feather} -p {pad} -c {tile_bounds_str} -G {group} -F {non_sigma_fields[group]} -O {out_file} {spacing_str}\n")
+                    fh.write(f"make_mosaic.py -v -w -R -d {in_dir} -g 'matched/E*.h5' -r {search_bounds_str} -f {feather} -p {pad} -c {tile_bounds_str} " 
+                             + f"-G {group} -F {non_sigma_fields[group]} -O {out_file} {spacing_str}\n")
                     if args.calc_sigma:
-                        fh.write(f"make_mosaic.py -w -d {in_dir} -g 'prelim/E*.h5' -r {search_bounds_str} -f {feather} -p {pad} -c {tile_bounds_str} -G {group} -F {sigma_fields[group]} -O {out_file} {spacing_str}\n")
+                        fh.write(f"make_mosaic.py -w -d {in_dir} -g 'prelim/E*.h5' -r {search_bounds_str} -f {feather} -p {pad} -c {tile_bounds_str}"
+                                 + f" -G {group} -F {sigma_fields[group]} -O {out_file} {spacing_str}\n")
+            if args.EPSG is not None:
+                cmd=f"make_tile_tifs.py {os.path.join(args.base_dir, dz_file)} {args.EPSG}"
+                if args.calc_sigma:
+                    cmd += " --read_sigma"
+                if args.mask_w is not None:
+                    cmd += f" --mask_w={args.mask_w}"
+                fh.write(cmd+"\n")
         st=os.stat(task_file)
         os.chmod(task_file, st.st_mode | stat.S_IEXEC)
 
