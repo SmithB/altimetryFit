@@ -46,10 +46,10 @@ def setup_lagrangian_fit(data, grids, G_data, constraint_ops_list, args=None, **
 
     E_RMS = args['E_RMS']
 
-    coords = [getattr(data, field) for field in args['lagrangian_coords']]
+    coords = np.c_[[getattr(data, field) for field in params['coords']]]
     G_data.add(
         LSsurf.lin_op(grids['lagrangian_dz'], name='interp_lagrangian_dz')
-        .interp_mtx([coords], bounds_error=False))
+        .interp_mtx( coords, bounds_error=False))
 
     if 'lagrangian_dz' in E_RMS and E_RMS['lagrangian_dz'] is not None:
         root_A_lag = np.sqrt(
@@ -73,15 +73,25 @@ def setup_lagrangian_fit(data, grids, G_data, constraint_ops_list, args=None, **
             grad_lag_dz.N_eq) + E_RMS['lagrangian_dzdx']/root_A_lag
         constraint_ops_list += [grad_lag_dz]
 
-def parse_lagrangian_fit(m0, G_data, grids):
+def parse_lagrangian_fit(m0, G_data, grids, sigma=False):
     m = {}
     shp = grids['lagrangian_dz'].shape
-    m['lagrangian_dz'] = pc.grid.data().from_dict({
+
+    if sigma:
+        key = 'sigma_lagrangian_dz'
+    else:
+        key = 'lagrangian_dz'
+    m[key] = pc.grid.data().from_dict({
         'x': grids['lagrangian_dz'].ctrs[1],
-        'y': grids['lagrangian_dz'].ctrs[0],
-        'dz': np.reshape(m0[G_data.TOC['cols']['lagrangian_dz']], shp),
-        'cell_area': grids['lagrangian_dz'].cell_area,
-        'mask': grids['lagrangian_dz'].mask})
+        'y': grids['lagrangian_dz'].ctrs[0]})
+    if sigma:
+        m[key].assign(
+            sigma_dz = np.reshape(m0[G_data.TOC['cols']['lagrangian_dz']], shp))
+    else:
+        m[key].assign(
+            dz = np.reshape(m0[G_data.TOC['cols']['lagrangian_dz']], shp),
+            cell_area = grids['lagrangian_dz'].cell_area,
+            mask = grids['lagrangian_dz'].mask)
     return m
 
 def setup_lagrangian(velocity_files=None, velocity_type = None, lagrangian_epoch=None, reference_epoch=None,
@@ -182,14 +192,17 @@ def update_data_for_lagrangian(data, lagrangian_ref_dem=None, mask_data=None, **
     t_lag = (data.time - kwargs['lagrangian_epoch'])*kwargs['xy0_obj'].years_to_time
 
     if kwargs['reread_data'] and 'x_lag' in data.fields:
-        # we're using data that has been reread from a previous run.
-        data.assign(x_original = data.x.copy())
-        data.assign(y_original = data.y.copy())
-        data.x = data.x_lag.copy()
-        data.y = data.y_lag.copy()
-        data.fields.remove('x_lag')
-        data.fields.remove('y_lag')
+        if 'move_points' in kwargs and kwargs['move_points']:
+            # if we are using data that was read from a previous fit in full
+            # lagrangian mode, copy the 'x_lag' and 'y_lag' fields to 'x' and 'y'
+            data.assign(x_original = data.x.copy())
+            data.assign(y_original = data.y.copy())
+            data.x = data.x_lag.copy()
+            data.y = data.y_lag.copy()
+            data.fields.remove('x_lag')
+            data.fields.remove('y_lag')
         out_args=kwargs
+        # if we are not moving the points, do nothing.
         return out_args
 
     if not kwargs['lagrangian_zero_velocity']:
