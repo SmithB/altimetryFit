@@ -327,6 +327,8 @@ def fit_altimetry(xy0=None, Width=4e4, \
             params=None,\
             DEM_grid_bias_params=None,\
             DEM_sigma_corr=20,\
+            solver='cholmod',\
+            cholmod_scale_columns=False,\
             THREADS=1):
     """
         Wrapper for smooth_fit that can find data and set the appropriate parameters
@@ -680,6 +682,8 @@ def fit_altimetry(xy0=None, Width=4e4, \
                      sigma_extra_keys=sigma_extra_keys,\
                      sensor_grid_bias_params=sensor_grid_bias_params,\
                      converge_tol_frac_TSE=converge_tol_frac,
+                     solver=solver,
+                     cholmod_scale_columns=cholmod_scale_columns,
                      THREADS=THREADS)
 
     if return_fit_objects:
@@ -796,6 +800,8 @@ def parse_inputs(argv):
     parser.add_argument('--avg_scales', type=str, help='scales at which to report average errors, comma-separated list, no spaces')
     parser.add_argument('--error_res_scale','-s', type=float, nargs='+', default=[4, 2], help='if the errors are being calculated (see calc_error_file), scale the grid resolution in x and y to be coarser')
     parser.add_argument('--converge_tol_frac', type=float, default=0.005, help='if the fractional change between two smooth_fit iterations is less than this value, the iteration has converged')
+    parser.add_argument('--sparseqr', action='store_true', help='solve the smooth_fit iterations with sparseqr (SPQR) instead of the default cholmod (normal equations + refinement, needs scikit-sparse)')
+    parser.add_argument('--cholmod_scale_columns', action='store_true', help='scale the normal matrix to a unit diagonal before the cholmod factorization, so its rcond check measures column dependence rather than column scaling')
     parser.add_argument('--THREADS', type=int, default=1, help='number of threads to use in suitesparse calculations')
     parser.add_argument('--max_mem', type=float, default=15., help='maximum memory the program is allowed to use, in GB.')
     args, unk=parser.parse_known_args(argv)
@@ -1048,6 +1054,8 @@ def main(argv=None):
             DEM_sigma_corr=args.DEM_sigma_corr,\
             DEM_grid_bias_params=args.DEM_bias_params,\
             DEM_slope_bias_scale=args.DEM_slope_bias_scale,\
+            solver='spqr' if args.sparseqr else 'cholmod',\
+            cholmod_scale_columns=args.cholmod_scale_columns,\
             THREADS=args.THREADS)
 
     if S is None:
