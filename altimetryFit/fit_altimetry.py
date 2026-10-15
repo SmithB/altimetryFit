@@ -329,6 +329,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
             DEM_sigma_corr=20,\
             solver='cholmod',\
             cholmod_scale_columns=False,\
+            cholmod_cache_ordering=False,\
             THREADS=1):
     """
         Wrapper for smooth_fit that can find data and set the appropriate parameters
@@ -684,6 +685,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
                      converge_tol_frac_TSE=converge_tol_frac,
                      solver=solver,
                      cholmod_scale_columns=cholmod_scale_columns,
+                     cholmod_cache_ordering=cholmod_cache_ordering,
                      THREADS=THREADS)
 
     if return_fit_objects:
@@ -802,6 +804,7 @@ def parse_inputs(argv):
     parser.add_argument('--converge_tol_frac', type=float, default=0.005, help='if the fractional change between two smooth_fit iterations is less than this value, the iteration has converged')
     parser.add_argument('--sparseqr', action='store_true', help='solve the smooth_fit iterations with sparseqr (SPQR) instead of the default cholmod (normal equations + refinement, needs scikit-sparse)')
     parser.add_argument('--cholmod_scale_columns', action='store_true', help='scale the normal matrix to a unit diagonal before the cholmod factorization, so its rcond check measures column dependence rather than column scaling')
+    parser.add_argument('--cholmod_cache_ordering', action='store_true', help='compute the METIS fill-reducing ordering for the cholmod factorization in the first smooth_fit iteration only, and reuse it in the later iterations')
     parser.add_argument('--THREADS', type=int, default=1, help='number of threads to use in suitesparse calculations')
     parser.add_argument('--max_mem', type=float, default=15., help='maximum memory the program is allowed to use, in GB.')
     args, unk=parser.parse_known_args(argv)
@@ -1056,6 +1059,7 @@ def main(argv=None):
             DEM_slope_bias_scale=args.DEM_slope_bias_scale,\
             solver='spqr' if args.sparseqr else 'cholmod',\
             cholmod_scale_columns=args.cholmod_scale_columns,\
+            cholmod_cache_ordering=args.cholmod_cache_ordering,\
             THREADS=args.THREADS)
 
     if S is None:
