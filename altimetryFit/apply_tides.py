@@ -6,9 +6,14 @@ Created on Wed Aug 14 14:19:34 2024
 @author: mostly Tyler Sutterley, developed for ATL1415
 """
 
+import contextlib
 import pointCollection as pc
 import numpy as np
 import pyTMD
+try:
+    import dask
+except ImportError:
+    dask = None
 
 def apply_tides(D, xy0, W,
                 tide_mask_file=None,
@@ -23,6 +28,7 @@ def apply_tides(D, xy0, W,
                 cutoff=200,
                 chunks='auto',
                 crs = None,
+                threads = None,
                 verbose = False):
 
     '''
@@ -47,6 +53,8 @@ def apply_tides(D, xy0, W,
         cutoff: extrapolation cutoff in kilometers
         chunks: kwarg passed to pyTMD
         crs : crs used by D.  proj4 format works
+        threads: number of dask threads for pyTMD's chunked calculation
+            (default: dask's default, one per core)
         verbose: control output verbosity
 
     output:
@@ -75,21 +83,27 @@ def apply_tides(D, xy0, W,
     # extrapolation cutoff is in kilometers
     if np.any(is_els.ravel()):
         if np.any(is_els.ravel()):
-            D.tide_ocean = np.array(
-                pyTMD.compute.tide_elevations(
-                D.x, D.y, (D.time-2018)*24*3600*365.25,
-                directory=tide_directory,
-                model=tide_model,
-                infer_minor=True,
-                chunks=chunks,
-                crs=crs,
-                type="drift",
-                epoch=(2018, 1, 1, 0, 0, 0),
-                standard="GPS",
-                method="linear",
-                extrapolate=extrapolate,
-                cutoff=cutoff,
-            ))
+            # cap the thread pool dask uses for pyTMD's chunked calculation
+            if threads is not None and dask is not None:
+                dask_config = dask.config.set(num_workers=threads)
+            else:
+                dask_config = contextlib.nullcontext()
+            with dask_config:
+                D.tide_ocean = np.array(
+                    pyTMD.compute.tide_elevations(
+                    D.x, D.y, (D.time-2018)*24*3600*365.25,
+                    directory=tide_directory,
+                    model=tide_model,
+                    infer_minor=True,
+                    chunks=chunks,
+                    crs=crs,
+                    type="drift",
+                    epoch=(2018, 1, 1, 0, 0, 0),
+                    standard="GPS",
+                    method="linear",
+                    extrapolate=extrapolate,
+                    cutoff=cutoff,
+                ))
 
     # use a flexure mask to adjust estimated tidal values
     if np.any(is_els.ravel()) and tide_adjustment:

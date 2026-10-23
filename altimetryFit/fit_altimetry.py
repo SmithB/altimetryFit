@@ -525,7 +525,8 @@ def fit_altimetry(xy0=None, Width=4e4, \
                             tide_adjustment_file = tide_adjustment_file,
                             extrapolate=True,
                             cutoff=200,
-                            crs = SRS_proj4)
+                            crs = SRS_proj4,
+                            threads = THREADS)
     else:
         data, sensor_dict = reread_data_from_fits(xy0, Width, reread_dirs, template='E%d_N%d.h5')
 
