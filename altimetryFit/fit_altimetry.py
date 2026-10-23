@@ -27,20 +27,8 @@ import sys
 import re
 import altimetryFit as aF
 
-threads_re=re.compile(r"THREADS=(\S+)")
-n_threads="1"
-for arg in sys.argv:
-    try:
-        n_threads=str(threads_re.search(arg).group(1))
-    except Exception:
-        pass
-if n_threads=="1" and "SLURM_NTASKS" in os.environ:
-    n_threads=os.environ['SLURM_NTASKS']
-    print(f"n_threads={n_threads}")
-os.environ["MKL_NUM_THREADS"]=n_threads
-os.environ["OPENBLAS_NUM_THREADS"]=n_threads
-os.environ['NUMEXPR_NUM_THREADS']=n_threads
-os.environ['OMP_NUM_THREADS']=n_threads
+# The BLAS/OpenMP thread-count environment variables are set from --THREADS
+# in altimetryFit/__init__.py (see set_threads.py), before numpy is imported.
 
 
 #import warnings

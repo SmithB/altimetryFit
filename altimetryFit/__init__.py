@@ -1,3 +1,12 @@
+import os as _os
+import sys as _sys
+from .set_threads import set_threads
+# OpenBLAS and OpenMP read their thread-count environment variables only when
+# numpy first loads them, so scripts that take --THREADS set them here, before
+# the imports below pull in numpy.
+if _sys.argv and _os.path.basename(_sys.argv[0]) in \
+        ['fit_altimetry.py', 'fit_DEM_bias.py']:
+    set_threads()
 #from .check_obj_memory import check_obj_memory
 from .read_optical import read_optical_data, laser_key
 #from .reread_data_from_fits import reread_data_from_fits
