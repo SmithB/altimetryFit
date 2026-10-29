@@ -8,7 +8,7 @@ fa = importlib.import_module('altimetryFit.fit_altimetry')
 def test_fine_grid_file(tmp_path):
     # the json file sets fine_grid_args; a relative region_file is found next to it
     os.makedirs(tmp_path/'cfg')
-    fine_args = {'region_file': 'rifts.geojson', 'spacing': 100, 'dt': 0.25,
+    fine_args = {'region_file': 'rifts.geojson', 'spacing': {'z0': 50, 'dz': 100, 'dt': 0.25},
                  'E_RMS': {'d2z0_dx2': 1.0, 'd3z_dx2dt': 0.3, 'd2z_dt2': 100}}
     with open(tmp_path/'cfg'/'fine.json', 'w') as fh:
         json.dump(fine_args, fh)

@@ -841,8 +841,11 @@ def read_fine_grid_file(filename):
 
     The file contains a dict with the entries of the LSsurf.smooth_fit
     fine_grid_args argument (see LSsurf/fine_grid_functions.py), e.g.:
-        {"region_file": "rift_region.geojson", "spacing": 100,
+        {"region_file": "rift_region.geojson",
+         "spacing": {"z0": 50, "dz": 100, "dt": 0.25},
          "E_RMS": {"d2z0_dx2": 1.0, "d3z_dx2dt": 0.3, "d2z_dt2": 100}}
+    "spacing" may also be a single number, used for both fine grids (with the
+    time spacing of the dz grid).
     A relative region_file path is interpreted relative to the json file's directory.
     '''
     with open(filename) as fh:
