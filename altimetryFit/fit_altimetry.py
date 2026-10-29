@@ -43,10 +43,6 @@ from LSsurf.fine_grid_functions import fine_grid_args_for_errors, fine_errors_to
 from altimetryFit.reread_data_from_fits import reread_data_from_fits
 import pointCollection as pc
 try:
-    from pyTMD import compute_tide_corrections
-except Exception:
-    pass
-try:
     from SMBcorr import assign_firn_variable
 except Exception:
     pass

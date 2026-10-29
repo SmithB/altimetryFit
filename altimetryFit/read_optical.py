@@ -13,7 +13,6 @@ from LSsurf.matlab_to_year import matlab_to_year
 from altimetryFit.read_DEM_data import read_DEM_data
 from altimetryFit.decimation_mask import read_no_decimation_mask, blockmedian_outside_mask
 import pointCollection as pc
-from ATL11.calc_geoloc_bias import calc_geoloc_bias
 
 import glob
 
@@ -304,6 +303,8 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
                                            DEM.interp(Di.x, Di.y, field='z_y')**2)})
 
             if xy_bias_file is not None:
+                # imported here so that altimetryFit can be imported without ATL11
+                from ATL11.calc_geoloc_bias import calc_geoloc_bias
                 if hemisphere==1:
                     EPSG=3413
                 else:

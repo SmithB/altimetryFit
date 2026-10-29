@@ -9,7 +9,6 @@ Created on Wed Aug 14 14:19:34 2024
 import contextlib
 import pointCollection as pc
 import numpy as np
-import pyTMD
 try:
     import dask
 except ImportError:
@@ -83,6 +82,8 @@ def apply_tides(D, xy0, W,
     # extrapolation cutoff is in kilometers
     if np.any(is_els.ravel()):
         if np.any(is_els.ravel()):
+            # imported here so that altimetryFit can be imported without pyTMD
+            import pyTMD
             # cap the thread pool dask uses for pyTMD's chunked calculation
             if threads is not None and dask is not None:
                 dask_config = dask.config.set(num_workers=threads)
