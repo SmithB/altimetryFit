@@ -39,6 +39,7 @@ import numpy as np
 from LSsurf.smooth_fit import smooth_fit
 from LSsurf import fd_grid
 from LSsurf.grid_functions import resolve_mask_roles
+from LSsurf.fine_grid_functions import fine_grid_args_for_errors, fine_errors_to_grid
 from altimetryFit.reread_data_from_fits import reread_data_from_fits
 import pointCollection as pc
 try:
@@ -225,6 +226,24 @@ def assign_sigma_corr(D, orbital_sensors=[-2, -1, 1, 2], airborne_sensors=[3, 3.
             mean_slope=0
         D.sigma_corr[ind] = np.sqrt(D.sigma_corr[ind]**2 +
                                     (mean_slope*5)**2)
+
+def fine_errors_to_fit_grid(E, field, filename):
+    '''
+    Interpolate errors for a fine grid onto the fine grid of the fit in filename
+
+    The fit's grid is read from the group named by the field without 'sigma_'.
+    If the file or the group does not exist, E is returned unchanged.
+    '''
+    group = field.replace('sigma_', '')
+    if not os.path.isfile(filename):
+        return E
+    with h5py.File(filename, 'r') as h5f:
+        if group not in h5f:
+            return E
+        coords = {coord: np.array(h5f[group][coord]) for coord in ['x', 'y', 'time'] if coord in h5f[group]}
+        valid = np.isfinite(np.array(h5f[group][group]))
+    return pc.grid.data().from_dict(coords | {
+        field: fine_errors_to_grid(E, coords['x'], coords['y'], field=field, valid=valid)})
 
 def save_errors_to_file( S, filename):
 
@@ -845,7 +864,9 @@ def read_fine_grid_file(filename):
          "spacing": {"z0": 50, "dz": 100, "dt": 0.25},
          "E_RMS": {"d2z0_dx2": 1.0, "d3z_dx2dt": 0.3, "d2z_dt2": 100}}
     "spacing" may also be a single number, used for both fine grids (with the
-    time spacing of the dz grid).
+    time spacing of the dz grid).  As for the coarse grids, error runs use
+    coarser fine grids: their spacings are multiplied by "error_res_scale"
+    (default {"z0": 4, "dz": 2}; 1 calculates errors at the fit's resolution).
     A relative region_file path is interpreted relative to the json file's directory.
     '''
     with open(filename) as fh:
@@ -939,7 +960,7 @@ def parse_inputs(argv):
     parser.add_argument('--lagrangian_dz_E_RMS', type=float, help='Expected RMS for moving topography')
     parser.add_argument('--lagrangian_dz_E_RMS_grad', type=float, help='Expected RMS gradient for moving topography')
     parser.add_argument('--lagrangian_zero_velocity', action='store_true', help='If set, all parameters will match the lagrangian parameters, but velocity will be set to zero')
-    parser.add_argument('--fine_grid_file', type=path, help='json file containing parameters for fine-resolution z0 and dz grids that cover a region of the domain (see read_fine_grid_file).  The region must be in the coordinates of the fit (with --lagrangian, the advected coordinates at lagrangian_epoch).  Fine grids keep their resolution when errors are calculated.')
+    parser.add_argument('--fine_grid_file', type=path, help='json file containing parameters for fine-resolution z0 and dz grids that cover a region of the domain (see read_fine_grid_file).  The region must be in the coordinates of the fit (with --lagrangian, the advected coordinates at lagrangian_epoch).  When errors are calculated, the fine grids are coarsened by the json file\'s error_res_scale entry (default 4 for z0, 2 for dz), and the errors are interpolated onto the fit\'s fine grids.')
     parser.add_argument('--mask_file', type=path)
     parser.add_argument('--gzone_relax_scale', type=float, help='relax the d3z_dx2dt constraint at the grounding zone by this factor')
     parser.add_argument('--mask_zero_scale', type=float, default=10, help='constraint equations will be reduced by this factor where the mask is zero')
@@ -1113,6 +1134,9 @@ def parse_inputs(argv):
     args.fine_grid_args=None
     if args.fine_grid_file is not None:
         args.fine_grid_args=read_fine_grid_file(args.fine_grid_file)
+        if args.calc_error_file is not None or args.calc_error:
+            # as for the coarse grids, errors are calculated with coarser fine grids
+            args.fine_grid_args=fine_grid_args_for_errors(args.fine_grid_args)
 
     args.params={}
     if args.param_files is not None:
@@ -1287,7 +1311,8 @@ def main(argv=None):
         S['E']['sigma_z0']=interp_ds(S['E']['sigma_z0'], args.error_res_scale[0])
         for field in S['E'].keys():
             if '_fine' in field:
-                # the fine grids are not coarsened for the error calculation
+                # the error run used coarser fine grids: interpolate onto the fit's fine grids
+                S['E'][field] = fine_errors_to_fit_grid(S['E'][field], field, args.out_name)
                 continue
             if 'sigma_dz' in field: # ['sigma_dz', 'sigma_dzdt_lag1', 'sigma_dzdt_lag2', 'sigma_dzdt_lag4']:
                 S['E'][field] = interp_ds( S['E'][field], args.error_res_scale[1] )

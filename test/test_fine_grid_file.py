@@ -27,3 +27,15 @@ def test_fine_grid_file(tmp_path):
                             '--GeoIndex_source_file', str(tmp_path/'GI.json'),
                             '--out_name', str(tmp_path/'E-1500_N-450.h5')])
     assert args.fine_grid_args is None
+
+    # error runs use coarser fine grids: 4x for z0 and 2x for dz by default, or error_res_scale
+    base_argv = ['--xy0', '-1500000', '-450000', '--Width', '40000', '-t', '2015,2025',
+                 '-g', '250,2000,0.25', '--reference_epoch', '20', '-H', '-1',
+                 '--GeoIndex_source_file', str(tmp_path/'GI.json'),
+                 '--out_name', str(tmp_path/'E-1500_N-450.h5'), '--calc_error']
+    args = fa.parse_inputs(base_argv + ['--fine_grid_file', str(tmp_path/'cfg'/'fine.json')])
+    assert args.fine_grid_args['spacing'] == {'z0': 200, 'dz': 200, 'dt': 0.25}
+    with open(tmp_path/'cfg'/'fine_full_res_errors.json', 'w') as fh:
+        json.dump(fine_args | {'error_res_scale': 1}, fh)
+    args = fa.parse_inputs(base_argv + ['--fine_grid_file', str(tmp_path/'cfg'/'fine_full_res_errors.json')])
+    assert args.fine_grid_args['spacing'] == fine_args['spacing']
