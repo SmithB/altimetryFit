@@ -89,16 +89,18 @@ def apply_tides(D, xy0, W,
             else:
                 dask_config = contextlib.nullcontext()
             with dask_config:
+                # D.time is years after Y2K + 2000 (see read_ICESat2), so the
+                # epoch must be 2000: an epoch of 2018 puts the tides 12 h late
                 D.tide_ocean = np.array(
                     pyTMD.compute.tide_elevations(
-                    D.x, D.y, (D.time-2018)*24*3600*365.25,
+                    D.x, D.y, (D.time-2000)*24*3600*365.25,
                     directory=tide_directory,
                     model=tide_model,
                     infer_minor=True,
                     chunks=chunks,
                     crs=crs,
                     type="drift",
-                    epoch=(2018, 1, 1, 0, 0, 0),
+                    epoch=(2000, 1, 1, 0, 0, 0),
                     standard="GPS",
                     method="linear",
                     extrapolate=extrapolate,
