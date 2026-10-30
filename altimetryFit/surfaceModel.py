@@ -79,13 +79,17 @@ class surfaceModel(pc.grid.data):
         self.x, self.y  = [np.arange(bb[0], bb[-1]+0.1*self.spacing, self.spacing)
                            for bb in bds]
     def _get_shifted_xy(self, assign=False):
+        # x0 and y0 have the shape of z: (ny, nx) for a scalar t, (ny, nx, nt) otherwise
+        squeeze = np.isscalar(self.t)
         t=self.t
-        if np.isscalar(self.t):
+        if squeeze:
             t=np.array([t])
         if self._xy0_interpolator is None:
             self._read_vel_interpolators()
         x0 = self._xy0_interpolator.interp(self.x, self.y, t, gridded=True, field='x0')
         y0 = self._xy0_interpolator.interp(self.x, self.y, t, gridded=True, field='y0')
+        if squeeze:
+            x0, y0 = x0[:,:,0], y0[:,:,0]
         if assign:
             self.assign(x0=x0, y0=y0)
         else:
@@ -234,11 +238,12 @@ class surfaceModel(pc.grid.data):
         """
         squeeze = np.isscalar(self.t)
         if self.shelf:
+            # x0 and y0 already have a time axis if t does
             self.assign(z0=self._z0.interp(self.x0, self.y0, field='z0'))
         else:
             self.assign(z0 = self._z0.interp(self.x, self.y, field='z0',  gridded=True))
-        if not squeeze:
-            self.z0=self.z0[:,:,None]
+            if not squeeze:
+                self.z0=self.z0[:,:,None]
 
 
     def get_dz(self):
