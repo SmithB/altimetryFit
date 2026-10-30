@@ -45,6 +45,8 @@ class surfaceModel(pc.grid.data):
     def _read_vel_interpolators(self, velocity_files=None, velocity_type=None):
         if velocity_files is None:
             velocity_files=self.velocity_files
+        if isinstance(velocity_files,str):
+            velocity_files=[velocity_files]
         if velocity_type is None:
             velocity_type=self.velocity_type
         if 'xy01_grids' in velocity_files[0] or velocity_type=='xy01_grids':
