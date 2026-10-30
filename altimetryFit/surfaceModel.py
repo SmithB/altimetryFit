@@ -79,8 +79,9 @@ class surfaceModel(pc.grid.data):
         self.x, self.y  = [np.arange(bb[0], bb[-1]+0.1*self.spacing, self.spacing)
                            for bb in bds]
     def _get_shifted_xy(self, assign=False):
+        t=self.t
         if np.isscalar(self.t):
-            t=[self.t]
+            t=np.array([t])
         if self._xy0_interpolator is None:
             self._read_vel_interpolators()
         x0 = self._xy0_interpolator.interp(self.x, self.y, t, gridded=True, field='x0')
