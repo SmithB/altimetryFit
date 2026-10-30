@@ -99,11 +99,13 @@ class surfaceModel(pc.grid.data):
         if bounds is None:
             bounds=self.bounds()
 
-        for group in ['z0','dz','lagrangian_dz']:
-            try:
-                setattr(self, '_'+group, pc.grid.data().from_h5(filename, group=group, bounds=bounds))
-            except Exception:
-                pass
+        for group in ['z0','dz']:
+            setattr(self, '_'+group, pc.grid.data().from_h5(filename, group=group, bounds=bounds))
+        # only fits with a lagrangian_dz grid (--lagrangian_dz_spacing) have this group
+        with h5py.File(filename,'r') as h5f:
+            has_lagrangian_dz = 'lagrangian_dz' in h5f
+        if has_lagrangian_dz:
+            self._lagrangian_dz=pc.grid.data().from_h5(filename, group='lagrangian_dz', bounds=bounds)
         return self
 
     def from_h5_directory(self, directory, bounds=None, match_extent=False, VERBOSE=False):
