@@ -61,6 +61,8 @@ def get_ATC_xform(filename, url_list_file, params=None):
     # the along and across-track vectors are the eigenvectors of the polygon boundary segment differences
     dxy=np.diff( poly[:, 0:2], axis=0 )
     vals, vecs = np.linalg.eig(dxy.T@dxy)
+    # numpy >= 2.5 returns complex eigenvectors; the matrix is symmetric, so they are real
+    vals, vecs = np.real(vals), np.real(vecs)
     # along track vector is the eigenvector aligned with local north-south
     vec_order=np.argsort(np.abs(xy0@vecs))[::-1]
     xform = {'origin': xy0, 'basis_vectors':vecs[:,vec_order]}

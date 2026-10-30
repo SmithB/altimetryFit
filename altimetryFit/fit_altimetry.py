@@ -452,8 +452,9 @@ def fit_altimetry(xy0=None, Width=4e4, \
     elif reread_dirs is None:
         if lagrangian_dict is not None and lagrangian_dict['move_points']:
             this_xy0=[*map(np.mean, lagrangian_dict['bds'])]
-            this_W={'x':np.diff(lagrangian_dict['bds'][0]),
-                           'y':np.diff(lagrangian_dict['bds'][1]),
+            # scalar widths: numpy >= 2.5 won't convert the 1-element output of np.diff to a scalar
+            this_W={'x':np.diff(lagrangian_dict['bds'][0])[0],
+                           'y':np.diff(lagrangian_dict['bds'][1])[0],
                            't':W['t']}
         else:
             this_xy0, this_W = [xy0, W]
