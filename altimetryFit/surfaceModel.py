@@ -217,7 +217,8 @@ class surfaceModel(pc.grid.data):
         self.assign(z=self.z0+self.dz)
         self.__update_size_and_shape__()
         self.__update_extent__()
-        if include_lagrangian:
+        # a model without a lagrangian_dz grid has no Lagrangian contribution
+        if include_lagrangian and self._lagrangian_dz is not None:
             self.get_lagrangian_dz()
             self.z += self.lagrangian_dz
         return self
