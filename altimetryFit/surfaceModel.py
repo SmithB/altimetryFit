@@ -58,7 +58,8 @@ class surfaceModel(pc.grid.data):
         else:
             interpolator_save_files=[os.path.splitext(velocity_files[0])[0] +'_xy01_grids.h5']
         if os.path.isfile(interpolator_save_files[0]):
-            self._xy0_interpolator=pc.grid.mosaic().from_list(interpolator_save_files, bounds=self.bounds(), group='xy0')
+            self._xy0_interpolator=pc.grid.mosaic().from_list(interpolator_save_files,
+                bounds=self._pad_bounds(self.bounds(), interpolator_save_files[0], 'xy0'), group='xy0')
             with h5py.File(interpolator_save_files[0],'r') as h5f:
                 try:
                     self._xy0_interpolator.t += np.array( h5f['xy0'].attrs['lagrangian_epoch'])
@@ -95,6 +96,33 @@ class surfaceModel(pc.grid.data):
         else:
             return x0, y0
 
+    def _shifted_bounds(self, bounds):
+        """
+        Expand bounds to include the shifted points x0, y0
+
+        Lagrangian grids (z0 and dz with shelf=True, and lagrangian_dz) are
+        interpolated at x0, y0, which lie upstream or downstream of x, y.
+        Bounds are returned unchanged if x0, y0 cannot be calculated.
+        """
+        if bounds is None or self.bounds() is None or self.t is None or self.velocity_files is None:
+            return bounds
+        return [[np.nanmin([bb[0], np.nanmin(xy0)]), np.nanmax([bb[1], np.nanmax(xy0)])]
+                for bb, xy0 in zip(bounds, self._get_shifted_xy())]
+
+    def _pad_bounds(self, bounds, filename, group):
+        """
+        Pad bounds by the grid spacing of a group in an h5 file
+
+        A grid read with bounds keeps only the nodes inside them, so points
+        between the last node and the edge of the bounds would interpolate to NaN.
+        """
+        if bounds is None:
+            return None
+        with h5py.File(filename,'r') as h5f:
+            x = h5f[group]['x']
+            spacing = np.abs(x[1]-x[0])
+        return [[bb[0]-spacing, bb[1]+spacing] for bb in bounds]
+
     def from_tile(self, filename, bounds=None, match_extent=False):
 
         if match_extent:
@@ -103,13 +131,20 @@ class surfaceModel(pc.grid.data):
         if bounds is None:
             bounds=self.bounds()
 
-        for group in ['z0','dz']:
-            setattr(self, '_'+group, pc.grid.data().from_h5(filename, group=group, bounds=bounds))
         # only fits with a lagrangian_dz grid (--lagrangian_dz_spacing) have this group
         with h5py.File(filename,'r') as h5f:
             has_lagrangian_dz = 'lagrangian_dz' in h5f
+        shifted_bounds = bounds
+        if self.shelf or has_lagrangian_dz:
+            shifted_bounds = self._shifted_bounds(bounds)
+
+        for group in ['z0','dz']:
+            these_bounds = shifted_bounds if self.shelf else bounds
+            setattr(self, '_'+group, pc.grid.data().from_h5(filename, group=group,
+                bounds=self._pad_bounds(these_bounds, filename, group)))
         if has_lagrangian_dz:
-            self._lagrangian_dz=pc.grid.data().from_h5(filename, group='lagrangian_dz', bounds=bounds)
+            self._lagrangian_dz=pc.grid.data().from_h5(filename, group='lagrangian_dz',
+                bounds=self._pad_bounds(shifted_bounds, filename, 'lagrangian_dz'))
         return self
 
     def from_h5_directory(self, directory, bounds=None, match_extent=False, VERBOSE=False):
@@ -132,6 +167,12 @@ class surfaceModel(pc.grid.data):
         if bounds is None:
             bounds=self.bounds()
 
+        has_lagrangian_dz = any(os.path.isfile(os.path.join(directory, name))
+                                for name in ['lagrangian_dz.h5', 'lag_dz.h5'])
+        shifted_bounds = bounds
+        if self.shelf or has_lagrangian_dz:
+            shifted_bounds = self._shifted_bounds(bounds)
+
         for group in ['z0','dz','lagrangian_dz']:
             try:
                 this_file = os.path.join(directory, group+'.h5')
@@ -142,7 +183,9 @@ class surfaceModel(pc.grid.data):
                             continue
                     else:
                         continue
-                temp = pc.grid.data().from_h5(this_file, group=group, bounds=bounds)
+                these_bounds = shifted_bounds if (self.shelf or group=='lagrangian_dz') else bounds
+                temp = pc.grid.data().from_h5(this_file, group=group,
+                                              bounds=self._pad_bounds(these_bounds, this_file, group))
                 if 'cell_area' in temp.fields:
                     mask=(temp.cell_area > 0.001*(temp.x[1]-temp.x[0])*(temp.y[1]-temp.y[0])).astype(float)
                     mask[mask==0] = np.nan
