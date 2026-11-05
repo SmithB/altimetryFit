@@ -37,6 +37,7 @@ import altimetryFit as aF
 import numpy as np
 from LSsurf.smooth_fit import smooth_fit
 from LSsurf import fd_grid
+from LSsurf.grid_functions import resolve_mask_roles
 from altimetryFit.reread_data_from_fits import reread_data_from_fits
 import pointCollection as pc
 try:
@@ -52,7 +53,8 @@ from altimetryFit.read_optical import read_optical_data, laser_key
 from altimetryFit.read_DEM_data import regen_DEM_meta
 from altimetryFit.read_CS2_data import read_CS2_data, radar_key
 from altimetryFit.apply_tides import apply_tides
-from altimetryFit.mask_functions import mask_data_by_year, update_mask_data_andor, setup_gzone_relax, apply_tide_mask_keep
+from altimetryFit.mask_functions import mask_data_by_year, setup_gzone_relax, \
+    make_default_mask, read_named_masks, mask_is_empty
 
 
 def set_memory_limit(max_bytes):
@@ -276,6 +278,9 @@ def fit_altimetry(xy0=None, Width=4e4, \
             DEM_t_buffer=None,\
             geoid_file=None,\
             mask_file=None, \
+            masks=None, \
+            grid_masks=None, \
+            data_mask=None, \
             erode_source_mask=True,\
             mask_zero_scale=10,\
             and_mask_files=None, \
@@ -321,6 +326,20 @@ def fit_altimetry(xy0=None, Width=4e4, \
             THREADS=1):
     """
         Wrapper for smooth_fit that can find data and set the appropriate parameters
+
+        Masks:
+            The mask built from mask_file (or all ones), tide_mask_keep_val, and
+            and_mask_files/or_mask_files is named 'default'.  Other masks can be
+            given in masks, a dictionary mapping mask names to pointCollection.grid.data
+            objects or to mask files (1 inside the mask).  Masks are assigned roles with:
+                grid_masks: dictionary mapping grid names ('z0', 'dz') to mask names
+                data_mask: name of the mask used to select data.  Data are used
+                    where this mask is greater than 0.5 at the location (and, for a
+                    mask with a time dimension, the time) of the measurement.  For
+                    full-lagrangian fits, this is the location before advection.
+            Roles that are not assigned use the default mask.  If no roles are
+            assigned, the default mask is used for everything, as it was before
+            roles were introduced.
     """
     print("fit_OIB: working on %s" % out_name)
 
@@ -355,13 +374,25 @@ def fit_altimetry(xy0=None, Width=4e4, \
         repeat_res=None
 
     pad=np.array([-1.e4, 1.e4])
-    if mask_file is not None:
-        mask_data=pc.grid.data().from_file(mask_file,bounds=[bds['x']+pad, bds['y']+pad])
-    else:
-        bds_pad=[jj+pad for jj in bds.values()]
-        mask_data=pc.grid.data().from_dict({'x':np.arange(bds_pad[0][0], bds_pad[0][1]+.1, spacing['dz']),
-                                            'y':np.arange(bds_pad[1][0], bds_pad[1][1]+.1, spacing['dz'])})
-        mask_data.assign(z=np.ones((len(mask_data.x), len(mask_data.y))))
+    # the default mask
+    default_mask_args = {'mask_file':mask_file,
+                         'spacing':spacing['dz'],
+                         'tide_mask_keep_val':tide_mask_keep_val,
+                         'tide_mask_keep_buffer':tide_mask_keep_buffer,
+                         'tide_mask_file':tide_mask_file,
+                         'and_mask_files':and_mask_files,
+                         'or_mask_files':or_mask_files}
+    mask_data = make_default_mask([bds['x']+pad, bds['y']+pad], **default_mask_args)
+
+    # masks can be assigned to the grids and to data selection (see the docstring)
+    mask_roles_assigned = grid_masks is not None or data_mask is not None
+    if masks is not None:
+        if 'default' in masks:
+            raise ValueError("the mask name 'default' is reserved for the mask built from mask_file, "
+                             "tide_mask_keep_val, and and_mask_files/or_mask_files")
+        if not mask_roles_assigned:
+            print("fit_altimetry: masks were given, but none is assigned to a grid or to data selection "
+                  "(see grid_masks and data_mask), so the default mask will be used for everything")
 
     constraint_scaling_maps={}
     if d2z_dt2_scale_file is not None:
@@ -381,15 +412,8 @@ def fit_altimetry(xy0=None, Width=4e4, \
                               constraint_scaling_maps,
                               tide_mask_shelf_val = tide_mask_shelf_val)
 
-    apply_tide_mask_keep(tide_mask_keep_val,
-                         buffer_W=tide_mask_keep_buffer,
-                         mask_data=mask_data,
-                         tide_mask_file=tide_mask_file)
-
-    if and_mask_files is not None or or_mask_files is not None:
-        update_mask_data_andor(mask_data, and_mask_files, or_mask_files)
-
-    if np.all(mask_data.z==0):
+    # if the masks have roles, the masks are checked after the lagrangian setup
+    if not mask_roles_assigned and np.all(mask_data.z==0):
         if verbose:
             print("no points in mask, returning")
         return None, None, None
@@ -420,6 +444,33 @@ def fit_altimetry(xy0=None, Width=4e4, \
             # move points by default
             lagrangian_dict['move_points'] = True
             DEM_grid_bias_params['coords'] = ['x_original','y_original']
+    full_lagrangian = lagrangian_dict is not None and lagrangian_dict['move_points']
+
+    # the mask used to select data.  Without roles, this is the default mask
+    data_selection_mask = mask_data
+    if mask_roles_assigned:
+        mask_bounds = [bds['x']+pad, bds['y']+pad]
+        if full_lagrangian:
+            # data are selected where they were measured, which can be anywhere
+            # that the tile's parcels were during the fit.  The bounds grow by
+            # whole multiples of the dz spacing, so that an all-ones default mask
+            # has the same nodes as it does without roles
+            dx = spacing['dz']
+            mask_bounds = [mb + np.array([-1, 1])*dx*np.ceil(np.maximum(0, [mb[0]-(lb[0]+pad[0]), lb[1]+pad[1]-mb[1]])/dx)
+                           for mb, lb in zip(mask_bounds, lagrangian_dict['bds'])]
+            mask_data = make_default_mask(mask_bounds, **default_mask_args)
+        mask_dict = {'default':mask_data}
+        if masks is not None:
+            mask_dict.update(read_named_masks(masks, mask_bounds))
+        role_names = resolve_mask_roles(mask_dict, grid_masks=grid_masks, data_mask=data_mask)
+        if verbose:
+            print("fit_altimetry: masks: " + ', '.join([f'{role}:{name}' for role, name in role_names.items()]))
+        data_selection_mask = mask_dict[role_names['data']]
+        if mask_is_empty(data_selection_mask) or \
+                (mask_is_empty(mask_dict[role_names['z0']]) and mask_is_empty(mask_dict[role_names['dz']])):
+            if verbose:
+                print("no points in mask, returning")
+            return None, None, None
 
     pgc_url_file=None
     default_data_fields=['x','y','z','time','sigma','sigma_corr',
@@ -540,7 +591,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
         reference_epoch=len(np.arange(t_span[0], t_span[1], spacing['dt']))
 
     if lagrangian_dict is not None:
-        lagrangian_dict=update_data_for_lagrangian( data, mask_data=mask_data,
+        lagrangian_dict=update_data_for_lagrangian( data, mask_data=data_selection_mask,
             **lagrangian_dict)
         if data.size==0 or np.sum(np.isfinite(data.z))==0:
             if verbose:
@@ -640,6 +691,15 @@ def fit_altimetry(xy0=None, Width=4e4, \
         return None, None, None
     print("fit_altimetry:")
     print(data.summary())
+    if mask_roles_assigned:
+        # in a full-lagrangian fit, data are selected at the locations where they were measured
+        mask_args = {'mask_file':None,
+                     'mask_data':mask_dict,
+                     'grid_masks':grid_masks,
+                     'data_mask':data_mask,
+                     'data_mask_coords':['x_original', 'y_original', 'time'] if full_lagrangian else None}
+    else:
+        mask_args = {'mask_file':mask_file, 'mask_data':mask_data}
     # run the fit
     if verbose:
         print("="*50)
@@ -656,9 +716,8 @@ def fit_altimetry(xy0=None, Width=4e4, \
                      data_slope_sensors=DEM_sensors,\
                      data_scale_fields=data_scale_fields,\
                      E_slope_bias=E_slope_bias,\
-                     mask_file=mask_file,\
                      erode_source_mask=erode_source_mask,\
-                     mask_data=mask_data,\
+                     **mask_args,\
                      sigma_extra_relax=sigma_extra_relax,\
                      constraint_scaling_maps=constraint_scaling_maps,\
                      prior_edge_args=prior_edge_args,\
@@ -774,6 +833,9 @@ def parse_inputs(argv):
     parser.add_argument('--mask_zero_scale', type=float, default=10, help='constraint equations will be reduced by this factor where the mask is zero')
     parser.add_argument('--and_mask_files', type=str, nargs='+')
     parser.add_argument('--or_mask_files', type=str, nargs='+')
+    parser.add_argument('--masks', type=str, nargs='+', metavar='NAME:FILE', help="named masks (geotif, or h5 with fields x, y, [t,] z; 1 inside the mask), assigned to grids and to data selection with --grid_masks and --data_mask.  The mask built from --mask_file (or all ones), --tide_mask_keep_val, and --and_mask_files/--or_mask_files is named 'default'")
+    parser.add_argument('--grid_masks', type=str, nargs='+', metavar='GRID:NAME', help="masks for the model grids (GRID is z0 or dz).  Grids without a mask assigned use the default mask")
+    parser.add_argument('--data_mask', type=str, metavar='NAME', help="mask used to select data: data are used where this mask is greater than 0.5 at the location (and, for a mask with a time dimension, the time) of the measurement.  For full-lagrangian fits, this is the location before advection.  If not set, the default mask is used")
     parser.add_argument('--geoid_file', type=path)
     parser.add_argument('--water_mask_threshold', type=float)
     parser.add_argument('--skip_erode_source_mask', action='store_true', help='if set, do not erode the source mask before fitting')
@@ -803,6 +865,21 @@ def parse_inputs(argv):
         print("unknown arguments:"+str(unk))
 
     args.erode_source_mask = not(args.skip_erode_source_mask)
+
+    def colon_pairs(pairs, option):
+        # parse a list of KEY:VALUE arguments into a dictionary
+        out={}
+        for pair in pairs:
+            if ':' not in pair:
+                raise ValueError(f'{option} arguments should be KEY:VALUE, got {pair}')
+            key, val = pair.split(':', 1)
+            out[key]=val
+        return out
+    if args.masks is not None:
+        args.masks = {name:path(mask_file) for name, mask_file in colon_pairs(args.masks, '--masks').items()}
+    if args.grid_masks is not None:
+        args.grid_masks = colon_pairs(args.grid_masks, '--grid_masks')
+
 
     if args.km:
         args.xy0 = [jj*1000 for jj in args.xy0]
@@ -1020,6 +1097,9 @@ def main(argv=None):
             calc_FAC_anomaly=args.calc_FAC_anomaly,\
             lagrangian_dict=args.lagrangian_dict,\
             mask_file=args.mask_file, \
+            masks=args.masks, \
+            grid_masks=args.grid_masks, \
+            data_mask=args.data_mask, \
             mask_zero_scale=args.mask_zero_scale, \
             and_mask_files=args.and_mask_files,\
             or_mask_files=args.or_mask_files,\
