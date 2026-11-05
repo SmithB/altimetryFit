@@ -380,14 +380,17 @@ class surfaceModel(pc.grid.data):
         squeeze = np.isscalar(self.t)
         if squeeze:
             t=[self.t]
+        else:
+            t=self.t
         temp=pc.grid.data().from_file(self.SMB_file, meta_only=True)
         t0 = temp.t[0]
         dt = temp.t[1]-temp.t[0]
-        t_range =[t[0]-2*dt, t[-1]+2*dt]
+        t_range =[np.min(t)-2*dt, np.max(t)+2*dt]
 
         FAC=pc.grid.data().from_file(self.SMB_file, bounds=self.bounds(pad=5.e4), t_range=t_range, fields=['FAC'])
         if calc_FAC_anomaly:
-            FAC0 =pc.grid.data().from_file(self.SMB_file, bounds=self.bounds(pad=5.e4), t_range=[t0-dt, t0+dt], fields=['FAC'])
+            # read only the first time step: a t_range of [t0-dt, t0+dt] read two
+            FAC0 =pc.grid.data().from_file(self.SMB_file, bounds=self.bounds(pad=5.e4), t_range=[t0, t0], fields=['FAC'])
             FAC.FAC -= FAC0.FAC
         FAC.FAC=pc.grid.fill_edges(FAC.FAC)
         FAC_i = FAC.interp(self.x, self.y, t, field='FAC', gridded=True)
