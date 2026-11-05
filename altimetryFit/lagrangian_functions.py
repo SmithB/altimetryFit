@@ -169,6 +169,102 @@ def apply_lagrangian_masks(data, x, y, mask_files=None, **kwargs):
         data.index(keep)
 
 
+def advect_mask(mask_data, t_span=None, spacing=None, mask_spacing=None, max_substeps=10,
+                xy0=None, Wxy=None, lagrangian_epoch=None, xy0_obj=None, xy1_obj=None,
+                lagrangian_zero_velocity=False, verbose=False, **kwargs):
+    '''
+    Map an eulerian mask into the lagrangian frame of a full-lagrangian fit
+
+    The nodes of a grid in lagrangian coordinates (parcel positions at
+    lagrangian_epoch) are advected through the time span of the fit, and the
+    mask is sampled at each parcel's position (and, for a mask with a time
+    dimension, at the time).  A parcel is inside the mask where the sampled
+    value is greater than 0.5.
+
+    Parameters
+    ----------
+    mask_data : pointCollection.grid.data
+        eulerian mask, optionally with a time dimension (t, in decimal years)
+    t_span : iterable
+        start and end of the fit (decimal years)
+    spacing : dict
+        grid spacing of the fit, with entries 'dz' and 'dt'.  The time-varying
+        mask is sampled at the epochs of the dz grid.
+    mask_spacing : float, optional
+        spacing of the lagrangian mask grid.  The default is spacing['dz']/2,
+        which puts mask nodes on the dz nodes.
+    max_substeps : int, optional
+        Between epochs, parcels are also sampled at substeps short enough that
+        they move less than mask_spacing between samples, up to this many per
+        epoch.  The substeps only affect mask_any.  The default is 10.
+    xy0, Wxy, lagrangian_epoch, xy0_obj, xy1_obj, lagrangian_zero_velocity :
+        lagrangian parameters, as returned by setup_lagrangian
+    verbose : bool, optional
+        if True, report the number of substeps.  The default is False.
+
+    Returns
+    -------
+    mask_epochs : pointCollection.grid.data
+        (y, x, t) mask, true where the parcel is inside mask_data at each dz epoch
+    mask_any : pointCollection.grid.data
+        (y, x) mask, true where the parcel is inside mask_data at any time
+        during the fit
+    '''
+    if lagrangian_epoch is None:
+        raise ValueError('advect_mask: lagrangian_epoch must be specified')
+    if mask_spacing is None:
+        mask_spacing = spacing['dz']/2
+    # lagrangian grid covering the domain, padded by two cells
+    pad = 2*mask_spacing
+    x = np.arange(xy0[0]-Wxy/2-pad, xy0[0]+Wxy/2+pad+mask_spacing/2, mask_spacing)
+    y = np.arange(xy0[1]-Wxy/2-pad, xy0[1]+Wxy/2+pad+mask_spacing/2, mask_spacing)
+    yg, xg = np.meshgrid(y, x, indexing='ij')
+    xg, yg = xg.ravel(), yg.ravel()
+    # the dz epochs, calculated as they are for the dz grid
+    t_epochs = fd_grid([np.array(t_span)], [spacing['dt']], name='t').ctrs[0]
+    mask_is_3d = len(mask_data.shape) == 3
+
+    def positions(t):
+        # positions of the parcels at time t
+        if lagrangian_zero_velocity:
+            return xg, yg
+        tt = np.zeros_like(xg) + (t - lagrangian_epoch)*xy0_obj.years_to_time
+        return xy1_obj.interp(xg, yg, tt, field='x1'), xy1_obj.interp(xg, yg, tt, field='y1')
+
+    def inside(xx, yy, t):
+        if mask_is_3d:
+            mask_i = mask_data.interp(xx, yy, np.zeros_like(xx)+t)
+        else:
+            mask_i = mask_data.interp(xx, yy)
+        return np.nan_to_num(mask_i) > 0.5
+
+    inside_epochs = np.zeros((len(y), len(x), len(t_epochs)), dtype=bool)
+    max_step = 0
+    last = None
+    for k, t in enumerate(t_epochs):
+        xx, yy = positions(t)
+        inside_epochs[:, :, k] = inside(xx, yy, t).reshape(len(y), len(x))
+        if last is not None:
+            step = np.abs((xx-last[0]) + 1j*(yy-last[1]))
+            if np.any(np.isfinite(step)):
+                max_step = np.maximum(max_step, np.nanmax(step))
+        last = (xx, yy)
+    inside_any = np.any(inside_epochs, axis=2)
+
+    # substeps between epochs, so that parcels that are inside the mask only
+    # between epochs are included in mask_any
+    n_sub = int(np.clip(np.ceil(max_step/mask_spacing), 1, max_substeps))
+    if verbose:
+        print(f'advect_mask: parcels move up to {max_step:0.0f} m between epochs, using {n_sub} substeps per epoch')
+    for t0 in t_epochs[:-1]:
+        for t in t0 + spacing['dt']*np.arange(1, n_sub)/n_sub:
+            inside_any |= inside(*positions(t), t).reshape(len(y), len(x))
+
+    mask_epochs = pc.grid.data().from_dict({'x':x, 'y':y, 't':t_epochs, 'z':inside_epochs})
+    mask_any = pc.grid.data().from_dict({'x':x, 'y':y, 'z':inside_any})
+    return mask_epochs, mask_any
+
+
 def update_data_for_lagrangian(data, lagrangian_ref_dem=None, mask_data=None, **kwargs):
     # default keyword arguments
     kwargs.setdefault('advection_obj', pointAdvection.advection())

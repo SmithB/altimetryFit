@@ -15,6 +15,7 @@ January 2026: Lagrangian update functions moved to lagrangian_functions.py
 
 from altimetryFit.lagrangian_functions import setup_lagrangian, \
     update_data_for_lagrangian, \
+    advect_mask, \
     update_output_data_for_lagrangian,\
     setup_lagrangian_fit,\
     parse_lagrangian_fit
@@ -281,6 +282,8 @@ def fit_altimetry(xy0=None, Width=4e4, \
             masks=None, \
             grid_masks=None, \
             data_mask=None, \
+            lagrangian_grid_masks=False, \
+            lagrangian_mask_spacing=None, \
             erode_source_mask=True,\
             mask_zero_scale=10,\
             and_mask_files=None, \
@@ -340,6 +343,22 @@ def fit_altimetry(xy0=None, Width=4e4, \
             Roles that are not assigned use the default mask.  If no roles are
             assigned, the default mask is used for everything, as it was before
             roles were introduced.
+
+            In a full-lagrangian fit, two more masks can be used for the grids,
+            made by advecting the nodes of the (lagrangian) model grid through
+            the time span of the fit and sampling the data mask at the parcel
+            positions (see lagrangian_functions.advect_mask):
+                'advected_any': parcels that are inside the data mask at any
+                    time during the fit
+                'advected': (time-varying) parcels that are inside the data
+                    mask at each epoch
+            lagrangian_grid_masks=True is short for
+            grid_masks={'z0':'advected_any', 'dz':'advected'} (grids assigned
+            in grid_masks keep their assignment).  For a floating-ice data mask,
+            the model includes every parcel that floats at some time during the
+            fit, and the dz mask shows when each parcel is grounded.
+            lagrangian_mask_spacing sets the spacing of the advected masks
+            (default: half the dz spacing).
     """
     print("fit_OIB: working on %s" % out_name)
 
@@ -385,11 +404,16 @@ def fit_altimetry(xy0=None, Width=4e4, \
     mask_data = make_default_mask([bds['x']+pad, bds['y']+pad], **default_mask_args)
 
     # masks can be assigned to the grids and to data selection (see the docstring)
+    advected_mask_names = ('advected', 'advected_any')
+    if lagrangian_grid_masks:
+        grid_masks = {'z0':'advected_any', 'dz':'advected', **(grid_masks or {})}
     mask_roles_assigned = grid_masks is not None or data_mask is not None
     if masks is not None:
-        if 'default' in masks:
-            raise ValueError("the mask name 'default' is reserved for the mask built from mask_file, "
-                             "tide_mask_keep_val, and and_mask_files/or_mask_files")
+        reserved = [name for name in masks if name in ('default',) + advected_mask_names]
+        if reserved:
+            raise ValueError(f"the mask names {reserved} are reserved: 'default' is the mask built from mask_file, "
+                             "tide_mask_keep_val, and and_mask_files/or_mask_files, and "
+                             f"{advected_mask_names} are made by advecting the data mask")
         if not mask_roles_assigned:
             print("fit_altimetry: masks were given, but none is assigned to a grid or to data selection "
                   "(see grid_masks and data_mask), so the default mask will be used for everything")
@@ -462,6 +486,17 @@ def fit_altimetry(xy0=None, Width=4e4, \
         mask_dict = {'default':mask_data}
         if masks is not None:
             mask_dict.update(read_named_masks(masks, mask_bounds))
+        if any(name in advected_mask_names for name in (grid_masks or {}).values()):
+            if not full_lagrangian:
+                raise ValueError(f"the masks {advected_mask_names} can only be used in full-lagrangian fits")
+            data_mask_name = 'default' if data_mask is None else data_mask
+            if data_mask_name not in mask_dict:
+                raise ValueError(f'data mask "{data_mask_name}" is not in the masks, which are {list(mask_dict)}')
+            mask_dict['advected'], mask_dict['advected_any'] = advect_mask(
+                mask_dict[data_mask_name], t_span=t_span, spacing=spacing,
+                mask_spacing=lagrangian_mask_spacing, verbose=verbose, **lagrangian_dict)
+        if data_mask in advected_mask_names:
+            raise ValueError(f"the masks {advected_mask_names} cannot be used as the data mask")
         role_names = resolve_mask_roles(mask_dict, grid_masks=grid_masks, data_mask=data_mask)
         if verbose:
             print("fit_altimetry: masks: " + ', '.join([f'{role}:{name}' for role, name in role_names.items()]))
@@ -834,7 +869,9 @@ def parse_inputs(argv):
     parser.add_argument('--and_mask_files', type=str, nargs='+')
     parser.add_argument('--or_mask_files', type=str, nargs='+')
     parser.add_argument('--masks', type=str, nargs='+', metavar='NAME:FILE', help="named masks (geotif, or h5 with fields x, y, [t,] z; 1 inside the mask), assigned to grids and to data selection with --grid_masks and --data_mask.  The mask built from --mask_file (or all ones), --tide_mask_keep_val, and --and_mask_files/--or_mask_files is named 'default'")
-    parser.add_argument('--grid_masks', type=str, nargs='+', metavar='GRID:NAME', help="masks for the model grids (GRID is z0 or dz).  Grids without a mask assigned use the default mask")
+    parser.add_argument('--grid_masks', type=str, nargs='+', metavar='GRID:NAME', help="masks for the model grids (GRID is z0 or dz).  Grids without a mask assigned use the default mask.  In full-lagrangian fits, NAME can also be advected_any or advected (see --lagrangian_grid_masks)")
+    parser.add_argument('--lagrangian_grid_masks', action='store_true', help="in a full-lagrangian fit, make the grid masks by advecting the model nodes through the time span of the fit and sampling the data mask: the z0 grid covers parcels that are inside the data mask at any time during the fit, and the (time-varying) dz mask shows whether each parcel is inside the data mask at each epoch.  The same as '--grid_masks z0:advected_any dz:advected'; grids named in --grid_masks keep their assignment")
+    parser.add_argument('--lagrangian_mask_spacing', type=float, help='spacing of the advected (lagrangian) masks.  Default: half the dz spacing')
     parser.add_argument('--data_mask', type=str, metavar='NAME', help="mask used to select data: data are used where this mask is greater than 0.5 at the location (and, for a mask with a time dimension, the time) of the measurement.  For full-lagrangian fits, this is the location before advection.  If not set, the default mask is used")
     parser.add_argument('--geoid_file', type=path)
     parser.add_argument('--water_mask_threshold', type=float)
@@ -1100,6 +1137,8 @@ def main(argv=None):
             masks=args.masks, \
             grid_masks=args.grid_masks, \
             data_mask=args.data_mask, \
+            lagrangian_grid_masks=args.lagrangian_grid_masks, \
+            lagrangian_mask_spacing=args.lagrangian_mask_spacing, \
             mask_zero_scale=args.mask_zero_scale, \
             and_mask_files=args.and_mask_files,\
             or_mask_files=args.or_mask_files,\
