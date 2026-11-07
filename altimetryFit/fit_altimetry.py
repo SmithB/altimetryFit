@@ -594,22 +594,24 @@ def fit_altimetry(xy0=None, Width=4e4, \
                                 xy_bias_file=xy_bias_file,
                                 no_decimation_mask=no_decimation_mask_file)
 
-        if D is None:
-            if verbose:
-                print("no data read, returning")
-            write_no_fit_file(no_fit_file, "no data read")
-            return None, None, None
-
         if sensor_dict is None:
             sensor_dict={}
 
         if 'POCA' in GI_files:
+            # read_optical_data returns D=None if it found no optical data
             if D is None:
                 D=[]
             sensor_dict.update( {val:key for key,val in radar_key().items()})
             D += read_CS2_data(xy0, W, GI_files, apply_filters=True,
                 DEM_file=DEM_file, dem_tol=DEM_tol, bias_lookup_dir=params['CS2']['bias_lookup_dir'],
                 sensor_dict=radar_key(), POCA_sensor=radar_key()['CS2_POCA'])
+
+        if D is None or all(Di is None for Di in D):
+            if verbose:
+                print("no data read, returning")
+            write_no_fit_file(no_fit_file, "no data read")
+            return None, None, None
+
         for ind, Di in enumerate(D):
             if Di is None:
                 continue
