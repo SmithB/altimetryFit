@@ -22,13 +22,17 @@ def select_gIs_by_cycle(gI_files, time_range):
     calendar_file = os.path.join(str(resources.files('altimetryFit')), 'package_data', 'IS2_calendar.json')
     with open(calendar_file,'r') as fh:
         is2c = json.load(fh)
-    cycle_start = [datetime.datetime(*jj) for jj in is2c.values()]
+    # start dates of cycles 1, 2, ... N
+    cycle_start = np.array([datetime.datetime(*jj) for jj in is2c.values()])
     date_range = [datetime.datetime(2018, 1, 1) + datetime.timedelta(days = (jj-2018)*365.25) for jj in time_range]
-    # first and last cycles, inclusive (argmin here gives the first zero value, returns zero if all zero):
-    cycles = [np.argmin(np.array(cycle_start)<jj) for jj in date_range]
-    if cycle_start[-1] < date_range[1]:
-        cycles[1] = len(cycle_start)
-    cycle_re = re.compile('cycle_(\d+)')
+    # first and last cycles, inclusive: a date is in the cycle whose number is the
+    # count of cycle starts on or before it (0 before cycle 1).  The calendar can
+    # end before the data do: a date after its last start is in cycle N or later,
+    # so a time range that ends after that start includes every later cycle.
+    cycles = [int(np.sum(cycle_start <= jj)) for jj in date_range]
+    if cycle_start[-1] <= date_range[1]:
+        cycles[1] = np.inf
+    cycle_re = re.compile(r'cycle_(\d+)')
     for gI_file in gI_files.copy():
         try:
             this_cycle = int(cycle_re.search(gI_file).group(1))
