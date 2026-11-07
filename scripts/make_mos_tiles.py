@@ -174,14 +174,15 @@ def main():
     if args.xy0 is not None and args.km:
         args.xy0 = [float(jj)*1000 for jj in args.xy0]
 
-    # the fit-tile geometry comes from the input arguments saved in the tiles
+    # the fit-tile geometry comes from the input arguments saved in the tiles,
+    # unless it is specified (older tiles have no input_args)
     tile_files=sorted(glob.glob(os.path.join(in_dir, 'prelim', 'E*N*.h5')))
     if len(tile_files)==0:
         tile_files=sorted(glob.glob(os.path.join(in_dir, 'matched', 'E*N*.h5')))
     if len(tile_files)==0:
         raise ValueError(f"no fit tiles found in {in_dir}/prelim or {in_dir}/matched")
     with h5py.File(tile_files[0],'r') as h5f:
-        input_args=dict(h5f['meta/input_args'].attrs)
+        input_args=dict(h5f['meta/input_args'].attrs) if 'meta/input_args' in h5f else {}
     for arg, key in [('tile_W', 'Width'), ('tile_spacing', 'tile_spacing')]:
         if getattr(args, arg) is None:
             if key not in input_args:
