@@ -25,7 +25,8 @@ def select_gIs_by_cycle(gI_files, time_range):
     date_range = [datetime.datetime(2018, 1, 1) + datetime.timedelta(days = (jj-2018)*365.25) for jj in time_range]
     # first and last cycles, inclusive (argmin here gives the first zero value, returns zero if all zero):
     cycles = [np.argmin(np.array(cycle_start)<jj) for jj in date_range]
-
+    if cycle_start[-1] < date_range[1]:
+        cycles[1] = len(cycle_start)
     cycle_re = re.compile('cycle_(\d+)')
     for gI_file in gI_files.copy():
         try:
@@ -92,7 +93,18 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
 
     for gI_file in gI_files:
         try:
-            D0 += pc.geoIndex().from_file(gI_file).query_xy((px.ravel(), py.ravel()), fields=fields)
+            if gI_file.endswith('.h5'):
+                D0 += pc.geoIndex().from_file(gI_file).query_xy((px.ravel(), py.ravel()), fields=fields)
+            elif gI_file.endswith('.json'):
+                tile_files = pc.tilingSchema().from_file(gI_file).filenames_for_box([bds['x'],bds['y']])
+                for tile_file in tile_files:
+                    #try:
+                    if True:
+                        D0 += [pc.indexedH5.data()\
+                               .from_h5(tile_file)\
+                                   .read([px.ravel(), py.ravel()], fields=fields)]
+                    #except Exception:
+                    #    pass
         except TypeError:
             print(f"read_ICESat-2: no data from {gI_file}")
 
@@ -163,7 +175,7 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
 
         D.assign({'quality':D.atl06_quality_summary})
 
-        cplx_data=np.in1d(1.e4*np.round((D.x+1j*D.y)/1.e4), cplx_bins)
+        cplx_data=np.isin(1.e4*np.round((D.x+1j*D.y)/1.e4), cplx_bins)
         if np.any(cplx_data):
             D.quality[cplx_data] = (D.snr_significance[cplx_data] > 0.02) | \
                 (D.n_fit_photons[cplx_data]/D.w_surface_window_final[cplx_data] < 5)
