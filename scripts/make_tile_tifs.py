@@ -28,7 +28,9 @@ def make_tile_tifs(dz_file, epsg, verbose=True, mask_w = None, geoid_file=None, 
         os.makedirs(tif_dir, exist_ok=True)
     except FileExistsError:
         pass
-    groups = ['epoch_count','dzdt','sigma_dzdt',  'epoch_count', 'cell_area']
+    groups = ['epoch_count','dzdt','std_dzdt',  'epoch_count', 'cell_area']
+    if read_sigma:
+        groups.append('sigma_dz')
     if not skip_z0:
         groups += ['z0','dz0dx', 'count']
     if read_sigma and (not skip_z0):
@@ -69,7 +71,10 @@ def make_tile_tifs(dz_file, epsg, verbose=True, mask_w = None, geoid_file=None, 
                 z0.to_geotif(os.path.join(tif_dir,'sigma_z0', f'sigma_z0{base}.tif'), field='sigma_z0', **gtif_kwargs)
     dz_file=os.path.join(input_dir,'dz','dz'+base+ext)
     if os.path.isfile(dz_file):
-        dz=pc.grid.data().from_h5(dz_file, group='dz', fields=['dz','cell_area','count'])
+        dz_fields = ['dz','cell_area','count']
+        if read_sigma:
+            dz_fields += ['sigma_dz']
+        dz=pc.grid.data().from_h5(dz_file, group='dz', fields=dz_fields)
         dz.dz[dz.cell_area<100]=np.nan
 
         dz.assign(epoch_count=np.nansum(dz.count > 0.25, axis=2))
@@ -82,9 +87,11 @@ def make_tile_tifs(dz_file, epsg, verbose=True, mask_w = None, geoid_file=None, 
 
         dz.assign(dzdt=dz.mask*(dz.dz[:,:,-1]-dz.dz[:,:,0])/(dz.t[-1]-dz.t[0]))
         dz.to_geotif(os.path.join(tif_dir,'dzdt', f'dzdt{base}.tif'), field='dzdt', **gtif_kwargs)
-        dz.assign(sigma_dzdt=dz.mask*np.std(np.diff(dz.dz, axis=2), axis=2)/(dz.t[1]-dz.t[0]))
-        dz.to_geotif(os.path.join(tif_dir, 'sigma_dzdt',f'sigma_dzdt{base}.tif'), field='sigma_dzdt', **gtif_kwargs)
+        dz.assign(std_dzdt=dz.mask*np.std(np.diff(dz.dz, axis=2), axis=2)/(dz.t[1]-dz.t[0]))
+        dz.to_geotif(os.path.join(tif_dir, 'std_dzdt',f'std_dzdt{base}.tif'), field='std_dzdt', **gtif_kwargs)
         dz.to_geotif(os.path.join(tif_dir, 'epoch_count',f'epoch_count{base}.tif'), field='epoch_count', **gtif_kwargs)
+        if 'sigma_dz' in dz_fields:
+            dz.to_geotif(os.path.join(tif_dir,'sigma_dz', f'sigma_dz{base}.tif'), field='sigma_dz', **gtif_kwargs)  
     dzL_file=os.path.join(input_dir,'lagrangian_dz','lagrangian_dz'+base+ext)
     if os.path.isfile(dzL_file):
         for group in ['dzL','dzLdx','dz0_tot_dx']:
