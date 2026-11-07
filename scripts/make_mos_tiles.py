@@ -2,6 +2,7 @@
 
 
 import glob
+import h5py
 import numpy as np
 import re
 import pointCollection as pc
@@ -94,11 +95,52 @@ def make_tile_centers(region_dir, W, R_max=None):
             fh.write(str(line[0])+' '+str(line[1])+'\n')
     return xyc
 
+def read_group_spacing(tile_file, groups):
+    '''
+    Grid spacing of each group in a fit tile, from its x coordinates, or from
+    the spacing in the group name (e.g. avg_dz_40000m) if the tile does not
+    have the group.  None if neither gives it.
+    '''
+    spacing={}
+    with h5py.File(tile_file,'r') as h5f:
+        for group in groups:
+            if group in h5f and 'x' in h5f[group] and h5f[group]['x'].size > 1:
+                x=np.array(h5f[group]['x'][0:2])
+                spacing[group]=float(np.abs(x[1]-x[0]))
+            else:
+                m=re.search(r'(\d+)m', group)
+                spacing[group]=None if m is None else float(m.group(1))
+    return spacing
+
+def mosaic_weights(tile_W, tile_spacing, grid_spacing, pad=None, feather=None):
+    '''
+    pad and feather (make_mosaic.py -p and -f) for mosaicking a group of fit
+    tiles whose grid spacing is grid_spacing.
+
+    Each tile's weight tapers to zero across its taper region: the outer
+    (tile_W - tile_spacing)/2 of the tile, which is the part of its overlap
+    with each neighbor that is closer to the neighbor's center.  By default,
+    the pad is two pixels (make_mosaic gives zero weight to points within pad
+    of the tile edge), and the feather (a raised-cosine taper) covers the rest
+    of the taper region.  If two pixels do not fit in the taper region (as for
+    coarse grids), the pad is half of the taper region.  If the tiles do not
+    overlap, pad and feather are zero, which make_mosaic treats as an
+    unweighted mosaic.
+    '''
+    taper=np.maximum((tile_W-tile_spacing)/2, 0)
+    if pad is None:
+        if grid_spacing is None:
+            raise ValueError('the grid spacing is needed to choose the pad')
+        pad = 2*grid_spacing if 2*grid_spacing < taper else taper/2
+    if feather is None:
+        feather=np.maximum(taper-pad, 0)
+    return float(pad), float(feather)
+
 def main():
     import argparse
     parser=argparse.ArgumentParser(description='generate tiled altimetryFit output.',\
                                    fromfile_prefix_chars="@")
-    parser.add_argument('-W', '--tile_W', type=float, help="input tile width", default=40000.)
+    parser.add_argument('-W', '--tile_W', type=float, help="input tile width, default is the Width of the fit tiles")
     parser.add_argument('--width', type=float, help="output tile width", default=200000.)
     parser.add_argument('--base_dir','-b', type=str, required=True)
     parser.add_argument('--calc_sigma', action='store_true')
@@ -109,13 +151,13 @@ def main():
     parser.add_argument('--hybrid', action='store_true')
     parser.add_argument('--prelim', action='store_true')
     parser.add_argument('--matched', action='store_true')
-    parser.add_argument('--tile_spacing', type=float, default=40000, help='distance between tile centers')
-    parser.add_argument('--pad', type=float, default=1000)
+    parser.add_argument('--tile_spacing', type=float, help='distance between tile centers, default is the tile_spacing of the fit tiles')
+    parser.add_argument('--pad', type=float, help="mosaic pad width, default is two pixels of each group's grid (see mosaic_weights)")
     parser.add_argument('--region', type=str, default='GL')
     parser.add_argument('--out_dir', type=str)
     parser.add_argument('--environment','-e',  type=str)
     parser.add_argument('--pboss', action='store_true')
-    parser.add_argument('--feather', type=float)
+    parser.add_argument('--feather', type=float, help='mosaic feather width, default is the rest of the taper region, (tile_W-tile_spacing)/2 - pad')
     parser.add_argument('--xy0', type=float, nargs=2, help='if specified, provide the command for the tile that contains this point')
     parser.add_argument('--km', action='store_true', help='specifies that xy0 is in km')
     parser.add_argument('--R_max', type=float, help='make only tiles that intersect this radius')
@@ -132,10 +174,19 @@ def main():
     if args.xy0 is not None and args.km:
         args.xy0 = [float(jj)*1000 for jj in args.xy0]
 
-    if args.feather is None:
-        # amount by which each tile overlaps its neighbors
-        overlap=(args.tile_W-args.tile_spacing)/2
-        args.feather=overlap-args.pad
+    # the fit-tile geometry comes from the input arguments saved in the tiles
+    tile_files=sorted(glob.glob(os.path.join(in_dir, 'prelim', 'E*N*.h5')))
+    if len(tile_files)==0:
+        tile_files=sorted(glob.glob(os.path.join(in_dir, 'matched', 'E*N*.h5')))
+    if len(tile_files)==0:
+        raise ValueError(f"no fit tiles found in {in_dir}/prelim or {in_dir}/matched")
+    with h5py.File(tile_files[0],'r') as h5f:
+        input_args=dict(h5f['meta/input_args'].attrs)
+    for arg, key in [('tile_W', 'Width'), ('tile_spacing', 'tile_spacing')]:
+        if getattr(args, arg) is None:
+            if key not in input_args:
+                raise ValueError(f"{key} is not in the input_args of {tile_files[0]}, specify --{arg}")
+            setattr(args, arg, float(input_args[key]))
 
     if args.calc_averages and args.max_res is None:
         args.max_res = np.minimum(40000, args.tile_W)
@@ -146,6 +197,14 @@ def main():
                        compute_sigma=args.calc_sigma, \
                        compute_SMB=args.calc_SMB,
                        hybrid=args.hybrid)
+
+    group_spacing=read_group_spacing(tile_files[0], fields.keys())
+    weights={}
+    for group in fields:
+        weights[group]=mosaic_weights(args.tile_W, args.tile_spacing, group_spacing[group],
+                                      pad=args.pad, feather=args.feather)
+        print(f"{group}: grid spacing={group_spacing[group]}, pad={weights[group][0]:g}, feather={weights[group][1]:g}")
+
     if args.xy0 is not None:
         xyc = [tuple([(np.floor(jj/args.width)+0.5)
                       * args.width for jj in args.xy0])]
@@ -209,20 +268,11 @@ def main():
                 if group == "dz":
                     dz_file = out_file
 
-                group_spacing=re.compile(r'(\d+)m').search(group)
-                if group_spacing is not None:
-                    group_spacing=group_spacing.group(1)
-                pad=args.pad
-                feather=args.feather
+                pad, feather=weights[group]
 
                 spacing_str=""
-                if group_spacing is not None:
-                    if int(group_spacing) > args.W/2:
-                        spacing_str=f"-S {int(group_spacing)} {int(group_spacing)}"
-                    if group_spacing > args.tile_W-(2*pad+feather):
-                        feather=0
-                    if group_spacing > args.tile_W-(2*pad):
-                        pad=0
+                if group_spacing[group] is not None and group_spacing[group] > args.tile_W/2:
+                    spacing_str=f"-S {int(group_spacing[group])} {int(group_spacing[group])}"
 
                 fh.write("#\n")
                 if args.prelim:
