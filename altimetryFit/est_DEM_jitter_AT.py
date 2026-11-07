@@ -20,19 +20,12 @@ for arg in sys.argv:
 os.environ["MKL_NUM_THREADS"]=n_threads
 os.environ["OPENBLAS_NUM_THREADS"]=n_threads
 
-import matplotlib.pyplot as plt
 import numpy as np
-import pyproj
 import os
-import geopandas as gpd
-import pyproj
 import sparseqr
 import scipy.sparse as sp
-from altimetryFit import get_pgc
 import LSsurf as LS
-import glob
 import pointCollection as pc
-import geopandas
 import json
 
 def get_residuals(DEM_file):
