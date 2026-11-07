@@ -71,6 +71,7 @@ dev = ["flake8", "pytest>=4.6", "pytest-cov"]
 "make_SMB_for_tile.py" = "scripts.make_SMB_for_tile:main"
 "check_calc_firn_anomaly.py" = "scripts.check_calc_firn_anomaly:main"
 "make_mos_tiles.py" = "scripts.make_mos_tiles:main"
+"make_mos_tiles_nc.py" = "scripts.make_mos_tiles_nc:main"
 "calc_DEM_misfit.py" = "scripts.calc_DEM_misfit:main"
 "make_mosaic_tifs.py" = "scripts.make_mosaic_tifs:main"
 "bias_stats_from_tiles.py" = "scripts.bias_stats_from_tiles:main"
