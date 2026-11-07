@@ -246,6 +246,23 @@ def save_errors_to_file( S, filename):
                 h5f.create_dataset('/bias/sigma/'+key, data=S['E']['sigma_bias'][key])
     return
 
+def no_fit_file_name(out_name):
+    # written by the fit, in place of out_name, when the tile has nothing to fit
+    return os.path.splitext(out_name)[0] + '.no_data'
+
+def write_no_fit_file(no_fit_file, reason):
+    """
+    Record that the tile had nothing to fit, and why.
+
+    Queues run the fit and its --calc_error_for_xy step joined by ';', so the
+    job's exit code is the error step's.  This file tells the error step that
+    a missing tile file means no data (exit 0) rather than a failed fit (exit 1).
+    """
+    if no_fit_file is None:
+        return
+    with open(no_fit_file, 'w') as fh:
+        fh.write(reason + '\n')
+
 def fit_altimetry(xy0=None, Width=4e4, \
             reread_file=None,\
             data=None,\
@@ -264,6 +281,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
             E_slope_bias=1.e-5, \
             sensor_dict={}, \
             out_name=None, \
+            no_fit_file=None, \
             bias_nsigma_edit=None, \
             bias_nsigma_iteration=3,\
             prior_edge_args=None,\
@@ -442,6 +460,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
     if not mask_roles_assigned and np.all(mask_data.z==0):
         if verbose:
             print("no points in mask, returning")
+        write_no_fit_file(no_fit_file, "no points in mask")
         return None, None, None
 
     if lagrangian_dict is not None:
@@ -507,6 +526,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
                 (mask_is_empty(mask_dict[role_names['z0']]) and mask_is_empty(mask_dict[role_names['dz']])):
             if verbose:
                 print("no points in mask, returning")
+            write_no_fit_file(no_fit_file, "no points in mask")
             return None, None, None
 
     pgc_url_file=None
@@ -574,6 +594,12 @@ def fit_altimetry(xy0=None, Width=4e4, \
                                 xy_bias_file=xy_bias_file,
                                 no_decimation_mask=no_decimation_mask_file)
 
+        if D is None:
+            if verbose:
+                print("no data read, returning")
+            write_no_fit_file(no_fit_file, "no data read")
+            return None, None, None
+
         if sensor_dict is None:
             sensor_dict={}
 
@@ -603,6 +629,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
 
         if data.size==0:
             print("No data found, returning")
+            write_no_fit_file(no_fit_file, "no data found")
             return None, None, None
 
         # apply the tides if a directory has been provided
@@ -641,6 +668,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
         if data.size==0 or np.sum(np.isfinite(data.z))==0:
             if verbose:
                 print("After lagrangian advection, no valid data remain")
+            write_no_fit_file(no_fit_file, "no valid data after lagrangian advection")
             return None, None, None
 
     # make every dataset a double
@@ -696,6 +724,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
     if data.size == 0:
         if verbose:
             print("fit_altimetry:No data found, returning")
+        write_no_fit_file(no_fit_file, "no data found after custom edits")
         return None, None, None
 
     # assign time_corr and (for laser sensors) sigma_corr
@@ -743,6 +772,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
     if data.size == 0:
         if verbose:
             print("fit_altimetry:No valid data found, returning")
+        write_no_fit_file(no_fit_file, "no valid data")
         return None, None, None
     print("fit_altimetry:")
     print(data.summary())
@@ -1028,6 +1058,12 @@ def parse_inputs(argv):
     if args.calc_error_for_xy:
         args.calc_error_file=args.out_name
         if not os.path.isfile(args.out_name):
+            no_fit_file = no_fit_file_name(args.out_name)
+            if os.path.isfile(no_fit_file):
+                with open(no_fit_file) as fh:
+                    reason = fh.read().strip()
+                print(f"{args.out_name} not found: the fit had nothing to fit ({reason}), returning")
+                return 0
             print(f"{args.out_name} not found, returning")
             return 1
 
@@ -1113,6 +1149,13 @@ def main(argv=None):
     if isinstance(args, int):
         return args
 
+    no_fit_file=None
+    if args.calc_error_file is None and not args.calc_error:
+        no_fit_file=no_fit_file_name(args.out_name)
+        # one left by an earlier run would hide a failure of this one
+        if os.path.isfile(no_fit_file):
+            os.remove(no_fit_file)
+
     S, data, sensor_dict = fit_altimetry(args.xy0, \
             Width=args.Width,
             E_RMS=args.E_RMS, \
@@ -1141,6 +1184,7 @@ def main(argv=None):
             hemisphere=args.Hemisphere, \
             reread_dirs=args.reread_dirs, \
             out_name=args.out_name, \
+            no_fit_file=no_fit_file, \
             GI_files=args.geoIndex_dict,\
             bm_scale=args.bm_scale,\
             N_target=args.N_target,\
@@ -1202,6 +1246,8 @@ def main(argv=None):
                              dzdt_lags=S['dzdt_lags'], \
                              reference_epoch=args.reference_epoch,
                              args=args)
+        else:
+            write_no_fit_file(no_fit_file, "smooth_fit found no valid data")
     else:
         if 'sigma_z0' not in S['E']:
             print("fit_altimetry.py: no sigma_z0 calculated, returning")
