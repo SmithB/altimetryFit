@@ -324,7 +324,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
             DEM_grid_bias_params=None,\
             DEM_sigma_corr=20,\
             solver='cholmod',\
-            cholmod_scale_columns=False,\
+            cholmod_scale_columns=True,\
             cholmod_cache_ordering=False,\
             THREADS=1):
     """
@@ -892,7 +892,8 @@ def parse_inputs(argv):
     parser.add_argument('--error_res_scale','-s', type=float, nargs='+', default=[4, 2], help='if the errors are being calculated (see calc_error_file), scale the grid resolution in x and y to be coarser')
     parser.add_argument('--converge_tol_frac', type=float, default=0.005, help='if the fractional change between two smooth_fit iterations is less than this value, the iteration has converged')
     parser.add_argument('--sparseqr', action='store_true', help='solve the smooth_fit iterations with sparseqr (SPQR) instead of the default cholmod (normal equations + refinement, needs scikit-sparse)')
-    parser.add_argument('--cholmod_scale_columns', action='store_true', help='scale the normal matrix to a unit diagonal before the cholmod factorization, so its rcond check measures column dependence rather than column scaling')
+    parser.add_argument('--cholmod_scale_columns', action='store_true', default=True, help='scale the normal matrix to a unit diagonal before the cholmod factorization, so its rcond check measures column dependence rather than column scaling (the default)')
+    parser.add_argument('--no_cholmod_scale_columns', dest='cholmod_scale_columns', action='store_false', help='factor the unscaled normal matrix in the cholmod solve (see --cholmod_scale_columns)')
     parser.add_argument('--cholmod_cache_ordering', action='store_true', help='compute the METIS fill-reducing ordering for the cholmod factorization in the first smooth_fit iteration only, and reuse it in the later iterations')
     parser.add_argument('--THREADS', type=int, default=1, help='number of threads to use in suitesparse calculations')
     parser.add_argument('--max_mem', type=float, default=15., help='maximum memory the program is allowed to use, in GB.')
@@ -916,7 +917,6 @@ def parse_inputs(argv):
         args.masks = {name:path(mask_file) for name, mask_file in colon_pairs(args.masks, '--masks').items()}
     if args.grid_masks is not None:
         args.grid_masks = colon_pairs(args.grid_masks, '--grid_masks')
-
 
     if args.km:
         args.xy0 = [jj*1000 for jj in args.xy0]
