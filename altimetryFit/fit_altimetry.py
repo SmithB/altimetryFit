@@ -51,6 +51,7 @@ except Exception:
     pass
 from altimetryFit import SMB_corr_from_grid
 from altimetryFit.read_optical import read_optical_data, laser_key
+from altimetryFit.decimation_mask import read_no_decimation_mask, in_no_decimation_mask
 from altimetryFit.read_DEM_data import regen_DEM_meta
 from altimetryFit.read_CS2_data import read_CS2_data, radar_key
 from altimetryFit.apply_tides import apply_tides
@@ -268,6 +269,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
             prior_edge_args=None,\
             replace=False, \
             xy_bias_file=None,\
+            no_decimation_mask_file=None,\
             tide_mask_keep_val=None,\
             tide_mask_keep_buffer=None,\
             firn_fixed=False, firn_rescale=False, \
@@ -569,7 +571,8 @@ def fit_altimetry(xy0=None, Width=4e4, \
                                 hemisphere=hemisphere,
                                 problem_DEM_files=problem_DEM_files,
                                 seg_diff_tol=seg_diff_tol,
-                                xy_bias_file=xy_bias_file)
+                                xy_bias_file=xy_bias_file,
+                                no_decimation_mask=no_decimation_mask_file)
 
         if sensor_dict is None:
             sensor_dict={}
@@ -590,6 +593,13 @@ def fit_altimetry(xy0=None, Width=4e4, \
 
         data=pc.data(fields = default_data_fields).from_list(D)
         data.assign({'day':np.floor(data.time*365.25)})
+
+        if no_decimation_mask_file is not None:
+            # flag the data inside the no-decimation mask (evaluated, as in the readers, at the
+            # measurement positions and times), so that they get their own sigma_extra
+            no_decimation_mask = read_no_decimation_mask(no_decimation_mask_file, this_xy0, this_W)
+            data.assign({'no_decimation':
+                         in_no_decimation_mask(no_decimation_mask, data.x, data.y, data.time).astype(float)})
 
         if data.size==0:
             print("No data found, returning")
@@ -705,6 +715,16 @@ def fit_altimetry(xy0=None, Width=4e4, \
     #                     'DEM': ~np.isin(data.sensor, altimeter_sensors)}
     sigma_extra_keys={'altimeter':{'sensor':altimeter_sensors},
                       'DEM':{'sensor':DEM_sensors}}
+    if 'no_decimation' in data.fields and np.any(data.no_decimation > 0):
+        # data kept at full density (inside the no-decimation mask) have different
+        # statistics from the decimated data, so they get their own sigma_extra:
+        # sigma_extra_class is 0 for decimated altimetry, 1 for decimated DEMs, 2 and 3 at full density
+        data.assign({'sigma_extra_class': (~np.isin(data.sensor, altimeter_sensors)
+                                           + 2*(data.no_decimation > 0)).astype(float)})
+        sigma_extra_keys={'altimeter':{'sigma_extra_class':[0]},
+                          'DEM':{'sigma_extra_class':[1]},
+                          'altimeter_no_decimation':{'sigma_extra_class':[2]},
+                          'DEM_no_decimation':{'sigma_extra_class':[3]}}
     if reference_DEM_file is not None and reread_file is None:
         # N.B.  Reference DEM is subtracted AFTER firn correction
         reference_DEM = pc.grid.data().from_file(reference_DEM_file,
@@ -835,6 +855,7 @@ def parse_inputs(argv):
     parser.add_argument('--bm_scale_DEM', type=float, default=200, help='blockmedian scale to apply to DEM data')
     parser.add_argument('--N_target_laser', type=float, default=200000, help='target number of laser data')
     parser.add_argument('--N_target_DEM', type=float, default=800000, help='target number of DEM data')
+    parser.add_argument('--no_decimation_mask_file', type=path, help='raster file (geotif, or h5 with fields x, y, [t,] z) that is greater than 0.5 where data are not decimated.  The decimation (blockmedian) scales are calculated from all of the data, as without the mask, but are only applied outside it.  A mask with a time dimension is evaluated at the data times (e.g. to follow features that move with the ice).  The data inside the mask get their own sigma_extra (for altimetry and for DEMs), because their statistics differ from those of the decimated data.')
     parser.add_argument('--N_target', type=str, help='specify target data count for sensors as sensor:N, with multiple arguments separated by commas')
     parser.add_argument('--extra_error', type=float)
     parser.add_argument('--DEM_file', type=path, help='DEM file to use with the DEM_tol parameter and in slope error calculations')
@@ -1124,6 +1145,7 @@ def main(argv=None):
             bm_scale=args.bm_scale,\
             N_target=args.N_target,\
             xy_bias_file=args.xy_bias_file,\
+            no_decimation_mask_file=args.no_decimation_mask_file,\
             firn_directory=args.firn_directory,\
             firn_version=args.firn_version,\
             firn_correction=args.firn_model,\

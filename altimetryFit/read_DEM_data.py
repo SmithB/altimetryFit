@@ -16,6 +16,7 @@ import altimetryFit as aF
 from .get_ATC_xform import get_DEM_ATC_xform
 from LSsurf.subset_DEM_stack import subset_DEM_stack
 from .remove_overlapping_DEM_data import remove_overlapping_DEM_data
+from .decimation_mask import blockmedian_outside_mask
 
 
 def get_2m_filename(thefile):
@@ -124,7 +125,8 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
                   target_area=None,
                   time_range=None,
                   data_sigma_max=None,
-                  include_xtrack=False, VERBOSE=True):
+                  include_xtrack=False, VERBOSE=True,
+                  no_decimation_mask=None):
 
     if DEM_meta_config is None:
         DEM_meta_config={}
@@ -260,7 +262,8 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
         if 'skip' in meta and meta['skip']:
             continue
         if blockmedian_scale is not None:
-            Di.blockmedian(blockmedian_scale)
+            # data inside the no-decimation mask (if any) are not decimated
+            blockmedian_outside_mask(Di, blockmedian_scale, no_decimation_mask)
         if Di.size==0:
             continue
         this_sensor_number += 1

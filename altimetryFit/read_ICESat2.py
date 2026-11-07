@@ -7,6 +7,7 @@ Created on Tue Aug 20 15:00:05 2019
 """
 import numpy as np
 from .check_ATL06_hold_list import read_ATL06_hold_files as read_hold_files
+from .decimation_mask import in_no_decimation_mask
 #from PointDatabase.geo_index import geo_index
 #from PointDatabase.point_data import point_data
 #from PointDatabase.ATL06_filters import segDifferenceFilter
@@ -66,7 +67,8 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
                  apply_hold_list=False,
                  seg_diff_tol=2, blockmedian_scale=None, cplx_accept_threshold=0.,
                  DEM_slope_bias_scale=None,
-                 t_range=None, target_area=None, N_target=None):
+                 t_range=None, target_area=None, N_target=None,
+                 no_decimation_mask=None):
     field_dict={None:['delta_time','h_li','h_li_sigma','latitude','longitude','atl06_quality_summary','segment_id','sigma_geo_h'],
                 'fit_statistics':['dh_fit_dx', 'dh_fit_dy', 'n_fit_photons','w_surface_window_final','snr_significance'],
                 'geophysical':['tide_ocean'],
@@ -186,15 +188,26 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
         #D.index(np.isfinite(D.z))
         if blockmedian_scale is not None:
             if blockmedian_scale is not None:
+                # segments inside the no-decimation mask (if any) are all kept,
+                # and are left out of the blockmedian
+                if no_decimation_mask is not None and 'x' not in D.fields:
+                    D.get_xy(SRS_proj4)
+                inside = in_no_decimation_mask(no_decimation_mask, D.x, D.y, D.time) & np.isfinite(D.z)
+                z_bm = D.z.copy()
+                z_bm[inside] = np.nan
                 # blockmedian by the mean of strong and weak beams
                 bm_ind = pc.pt_blockmedian(D.x_atc, np.zeros_like(D.z),
-                                        D.z, blockmedian_scale, return_index=True)[3]
-                if len(bm_ind)==0:
+                                        z_bm, blockmedian_scale, return_index=True)[3]
+                i_inside = np.flatnonzero(inside.ravel())
+                if len(bm_ind)==0 and len(i_inside)==0:
                     continue
                 for field in D.fields:
                     temp=getattr(D, field).ravel()
-                    temp=np.concatenate([temp[bm_ind[:,0],None], temp[bm_ind[:,1],None]], axis=1)
-                    setattr(D, field, np.squeeze(np.nanmean(temp, axis=1)))
+                    if len(bm_ind) > 0:
+                        bm_vals=np.nanmean(np.concatenate([temp[bm_ind[:,0],None], temp[bm_ind[:,1],None]], axis=1), axis=1)
+                    else:
+                        bm_vals=np.zeros(0, dtype=temp.dtype)
+                    setattr(D, field, np.concatenate([bm_vals, temp[i_inside]]))
 
         if 'x' not in D.fields:
             D.get_xy(SRS_proj4)

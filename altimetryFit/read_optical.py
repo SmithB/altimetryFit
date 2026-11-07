@@ -11,6 +11,7 @@ import numpy as np
 from altimetryFit.read_ICESat2 import read_ICESat2
 from LSsurf.matlab_to_year import matlab_to_year
 from altimetryFit.read_DEM_data import read_DEM_data
+from altimetryFit.decimation_mask import read_no_decimation_mask, blockmedian_outside_mask
 import pointCollection as pc
 from ATL11.calc_geoloc_bias import calc_geoloc_bias
 
@@ -106,7 +107,7 @@ def read_ATM_ICESSN(xy0, W, gI_files, sensor=3.5, track_identifier=None):
             D0 += temp
     return D0
 
-def read_ATM(xy0, W, gI_files, sensor=3, blockmedian_scale=100., slope_rescale=1.):
+def read_ATM(xy0, W, gI_files, sensor=3, blockmedian_scale=100., slope_rescale=1., no_decimation_mask=None):
     fields=['x','y','z', 'time','bias_50m', 'noise_50m', 'N_50m','slope_x','slope_y']
     if W is not None:
         dx=1.e4
@@ -143,10 +144,10 @@ def read_ATM(xy0, W, gI_files, sensor=3, blockmedian_scale=100., slope_rescale=1
                                               'sigma','sigma_corr','sensor',
                                               'slope_mag'])
         if blockmedian_scale is not None:
-            D0[ind].blockmedian(blockmedian_scale)
+            blockmedian_outside_mask(D0[ind], blockmedian_scale, no_decimation_mask)
     return D0
 
-def read_LVIS(xy0, W, gI_files, sensor=4, blockmedian_scale=100):
+def read_LVIS(xy0, W, gI_files, sensor=4, blockmedian_scale=100, no_decimation_mask=None):
     fields={'x','y','z','time','bias_50m', 'noise_50m','slope_x','slope_y'}
     D0=[]
     for gI_file in gI_files:
@@ -180,7 +181,7 @@ def read_LVIS(xy0, W, gI_files, sensor=4, blockmedian_scale=100):
                                               'sigma_corr','sensor',
                                               'slope_mag'])
         if D0[ind].size > 5:
-            D0[ind].blockmedian(blockmedian_scale)
+            blockmedian_outside_mask(D0[ind], blockmedian_scale, no_decimation_mask)
     return D0
 
 
@@ -202,7 +203,8 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
               DEM_sigma_corr=20,
               data_sigma_max=None,
               problem_DEM_files=None,
-              xy_bias_file=None):
+              xy_bias_file=None,
+              no_decimation_mask=None):
     """
     Read laser-altimetry and DEM data from geoIndex files.
 
@@ -251,6 +253,12 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
         List of files containing DEM files to be excluded from the analysis
     xy_bias_file: str, optional
         file from which to read xy biases for ICESat-2 data.
+    no_decimation_mask: str or pointCollection.grid.data, optional
+        raster (or raster file) that is greater than 0.5 where data are not
+        decimated.  The decimation scale for each data type is calculated from
+        all of the data, as without a mask, but it is only applied outside the
+        mask.  If the mask has a time dimension, it is evaluated at the data
+        times. See altimetryFit.decimation_mask.  The default is None.
 
     Returns
     -------
@@ -274,6 +282,7 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
             DEM.calc_gradient()
     if bm_scale is None:
         bm_scale={'laser':100, 'DEM':200}
+    no_decimation_mask = read_no_decimation_mask(no_decimation_mask, xy0, W)
 
     if 'ICESat2' in GI_files:
 
@@ -285,7 +294,8 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
                     N_target=N_target['laser'],
                     seg_diff_tol=seg_diff_tol,
                     DEM_slope_bias_scale=DEM_slope_bias_scale,
-                    t_range=time_range)
+                    t_range=time_range,
+                    no_decimation_mask=no_decimation_mask)
 
         for Di in D:
             if not hasattr(Di,'x'):
@@ -318,12 +328,14 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
     if 'LVIS' in GI_files:
         D_LVIS=read_LVIS(xy0, W,
                          find_gI_files(GI_files['LVIS']),
-                         blockmedian_scale=bm_scale['laser'], sensor=laser_dict['LVIS'])
+                         blockmedian_scale=bm_scale['laser'], sensor=laser_dict['LVIS'],
+                         no_decimation_mask=no_decimation_mask)
         if D_LVIS is not None:
             D += D_LVIS
     if 'ATM' in GI_files:
         D_ATM = read_ATM(xy0, W, find_gI_files(GI_files['ATM'])
-                         , blockmedian_scale=bm_scale['laser'], sensor=laser_dict['ATM'])
+                         , blockmedian_scale=bm_scale['laser'], sensor=laser_dict['ATM'],
+                         no_decimation_mask=no_decimation_mask)
         if D_ATM is not None:
             D += D_ATM
     if 'ATM_ICESSN' in GI_files:
@@ -354,7 +366,8 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
                             problem_DEM_files=problem_DEM_files,
                             subset_stack=dem_subset_TF,
                             data_sigma_max=data_sigma_max,
-                            year_offset=year_offset)
+                            year_offset=year_offset,
+                            no_decimation_mask=no_decimation_mask)
         if D_DEM is not None:
             D += D_DEM
     if len(D)==0:
