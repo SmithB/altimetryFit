@@ -84,6 +84,10 @@ script-files = ["scripts/regen_OIB_mosaics.sh", "scripts/proc_pgc_dem.sh", "scri
 [tool.setuptools.packages.find]
 exclude = ["test*"]
 
+# data files read with importlib.resources (read_ICESat2.py, check_ATL06_hold_list.py)
+[tool.setuptools.package-data]
+altimetryFit = ["package_data/*.json", "package_data/held_granules/*.csv"]
+
 [tool.pytest.ini_options]
 minversion = "6.0"
 norecursedirs = ".git"
