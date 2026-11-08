@@ -72,6 +72,7 @@ dev = ["flake8", "pytest>=4.6", "pytest-cov"]
 "check_calc_firn_anomaly.py" = "scripts.check_calc_firn_anomaly:main"
 "make_mos_tiles.py" = "scripts.make_mos_tiles:main"
 "make_mos_tiles_nc.py" = "scripts.make_mos_tiles_nc:main"
+"update_IS2_calendar.py" = "scripts.update_IS2_calendar:main"
 "calc_DEM_misfit.py" = "scripts.calc_DEM_misfit:main"
 "make_mosaic_tifs.py" = "scripts.make_mosaic_tifs:main"
 "bias_stats_from_tiles.py" = "scripts.bias_stats_from_tiles:main"
