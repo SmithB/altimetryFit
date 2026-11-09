@@ -131,7 +131,7 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
 
     # remove points outside the requested region
     D0.index((D0.x>xy0[0]-W['x']/2) & (D0.x<xy0[0]+W['x']/2) &
-             (D0.y>xy0[1]-W['x']/2) & (D0.y<xy0[1]+W['x']/2))
+             (D0.y>xy0[1]-W['y']/2) & (D0.y<xy0[1]+W['y']/2))
 
 
     if remove_overlap:
