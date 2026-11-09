@@ -19,17 +19,24 @@ def make_fields(max_coarse=40000, max_lag=1, compute_lags=False, \
         fields['lagrangian_dz']=["dz"]
 
     fields['dz']="dz sigma_dz count misfit_rms misfit_scaled_rms mask cell_area".split(' ')
-    if not compute_sigma:
-        fields['z0']=[field for field in fields['z0'].copy() if 'sigma' not in field]
-        fields['dz']=[field for field in fields['dz'].copy() if 'sigma' not in field]
 
     if compute_SMB:
         for ff in fields.values():
             ff += ['SMB_a','FAC']
 
-    if not compute_lags:
-        return fields
+    if compute_lags:
+        add_lag_fields(fields, max_coarse=max_coarse, max_lag=max_lag)
 
+    if not compute_sigma:
+        fields={group:[field for field in field_list if 'sigma' not in field]
+                for group, field_list in fields.items()}
+    return fields
+
+def add_lag_fields(fields, max_coarse=40000, max_lag=1):
+    '''
+    Add the dzdt groups for lags 1, 4, 8, ... max_lag, and the averages (at
+    resolutions up to max_coarse, none if max_coarse is None) of dz and dzdt.
+    '''
     lags=[]
     for lag in [1]+list(np.arange(4, max_lag+1, 4)):
         if lag > max_lag:
@@ -48,8 +55,6 @@ def make_fields(max_coarse=40000, max_lag=1, compute_lags=False, \
         for lag in lags:
             field_str='avg_dzdt'+res+lag
             fields[field_str]=[field_str, 'sigma_'+field_str]
-
-    return fields
 
 def make_tile_centers(region_dir, W, R_max=None):
 
@@ -146,6 +151,7 @@ def main():
     parser.add_argument('--calc_sigma', action='store_true')
     parser.add_argument('--calc_SMB', action='store_true')
     parser.add_argument('--calc_averages', action='store_true')
+    parser.add_argument('--calc_lags', action='store_true', help='mosaic the dzdt lag groups (and, with --max_res or --calc_averages, the averages) without --calc_sigma, which also mosaics them')
     parser.add_argument('--max_res', type=float)
     parser.add_argument('--max_lag', type=int, default=1)
     parser.add_argument('--hybrid', action='store_true')
@@ -194,7 +200,7 @@ def main():
 
     fields=make_fields(max_coarse=args.max_res, \
                        max_lag=args.max_lag,\
-                       compute_lags=args.calc_sigma, \
+                       compute_lags=args.calc_sigma or args.calc_lags, \
                        compute_sigma=args.calc_sigma, \
                        compute_SMB=args.calc_SMB,
                        hybrid=args.hybrid)
