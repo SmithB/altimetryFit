@@ -864,9 +864,12 @@ def read_fine_grid_file(filename):
          "spacing": {"z0": 50, "dz": 100, "dt": 0.25},
          "E_RMS": {"d2z0_dx2": 1.0, "d3z_dx2dt": 0.3, "d2z_dt2": 100}}
     "spacing" may also be a single number, used for both fine grids (with the
-    time spacing of the dz grid).  As for the coarse grids, error runs use
+    time spacing of the dz grid).  To refine only one field, give only its
+    spacing (e.g. {"z0": 25}, or {"dz": 50, "dt": 0.25}) and only its E_RMS
+    entries; the other fine grid is then left out.  As for the coarse grids, error runs use
     coarser fine grids: their spacings are multiplied by "error_res_scale"
-    (default {"z0": 4, "dz": 2}; 1 calculates errors at the fit's resolution).
+    (default {"z0": 4, "dz": 2}, only the refined fields' entries are needed;
+    1 calculates errors at the fit's resolution).
     A relative region_file path is interpreted relative to the json file's directory.
     '''
     with open(filename) as fh:
@@ -960,7 +963,7 @@ def parse_inputs(argv):
     parser.add_argument('--lagrangian_dz_E_RMS', type=float, help='Expected RMS for moving topography')
     parser.add_argument('--lagrangian_dz_E_RMS_grad', type=float, help='Expected RMS gradient for moving topography')
     parser.add_argument('--lagrangian_zero_velocity', action='store_true', help='If set, all parameters will match the lagrangian parameters, but velocity will be set to zero')
-    parser.add_argument('--fine_grid_file', type=path, help='json file containing parameters for fine-resolution z0 and dz grids that cover a region of the domain (see read_fine_grid_file).  The region must be in the coordinates of the fit (with --lagrangian, the advected coordinates at lagrangian_epoch).  When errors are calculated, the fine grids are coarsened by the json file\'s error_res_scale entry (default 4 for z0, 2 for dz), and the errors are interpolated onto the fit\'s fine grids.')
+    parser.add_argument('--fine_grid_file', type=path, help='json file containing parameters for fine-resolution z0 and/or dz grids that cover a region of the domain (see read_fine_grid_file; give only the z0 or only the dz spacing to refine one field).  The region must be in the coordinates of the fit (with --lagrangian, the advected coordinates at lagrangian_epoch).  When errors are calculated, the fine grids are coarsened by the json file\'s error_res_scale entry (default 4 for z0, 2 for dz), and the errors are interpolated onto the fit\'s fine grids.')
     parser.add_argument('--mask_file', type=path)
     parser.add_argument('--gzone_relax_scale', type=float, help='relax the d3z_dx2dt constraint at the grounding zone by this factor')
     parser.add_argument('--mask_zero_scale', type=float, default=10, help='constraint equations will be reduced by this factor where the mask is zero')
