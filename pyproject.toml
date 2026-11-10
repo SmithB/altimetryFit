@@ -63,6 +63,7 @@ dev = ["flake8", "pytest>=4.6", "pytest-cov"]
 "update_pgc_meta.py" = "scripts.update_pgc_meta:main"
 "dem_cleanup_with_ref_DEM.py" = "scripts.dem_cleanup_with_ref_DEM:main"
 "dem_filter.py" = "scripts.dem_filter:main"
+"fill_z0.py" = "scripts.fill_z0:main"
 "make_OIB_queue.py" = "scripts.make_OIB_queue:main"
 "mask_DEM_plane_artifacts.py" = "scripts.mask_DEM_plane_artifacts:main"
 "model_to_file.py" = "scripts.model_to_file:main"
@@ -77,6 +78,7 @@ dev = ["flake8", "pytest>=4.6", "pytest-cov"]
 "make_mosaic_tifs.py" = "scripts.make_mosaic_tifs:main"
 "bias_stats_from_tiles.py" = "scripts.bias_stats_from_tiles:main"
 "fit_altimetry.py" = "altimetryFit.fit_altimetry:main"
+"fit_DEM_bias.py" = "altimetryFit.fit_DEM_bias:main"
 
 [tool.setuptools]
 script-files = ["scripts/regen_OIB_mosaics.sh", "scripts/proc_pgc_dem.sh", "scripts/get_pgc_fullres.sh", "scripts/get_pgc_2res.sh"]

@@ -24,6 +24,7 @@ from .surfaceModel import surfaceModel
 from  .tile_names import tile_centers_from_files
 from  .tile_names import tile_centers_from_scripts
 from  .get_pgc import *
+from .fit_DEM_bias import fit_DEM_bias
 from . import eval_model
 from . import register_DEMs
 from . import bias_functions 
