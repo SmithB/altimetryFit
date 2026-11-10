@@ -12,10 +12,11 @@ import json
 import glob
 import h5py
 import re
-import LSsurf as LS
+import altimetryFit as aF
 from .get_ATC_xform import get_DEM_ATC_xform
 from LSsurf.subset_DEM_stack import subset_DEM_stack
 from .remove_overlapping_DEM_data import remove_overlapping_DEM_data
+from .decimation_mask import blockmedian_outside_mask
 
 
 def get_2m_filename(thefile):
@@ -124,7 +125,8 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
                   target_area=None,
                   time_range=None,
                   data_sigma_max=None,
-                  include_xtrack=False, VERBOSE=True):
+                  include_xtrack=False, VERBOSE=True,
+                  no_decimation_mask=None):
 
     if DEM_meta_config is None:
         DEM_meta_config={}
@@ -260,7 +262,8 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
         if 'skip' in meta and meta['skip']:
             continue
         if blockmedian_scale is not None:
-            Di.blockmedian(blockmedian_scale)
+            # data inside the no-decimation mask (if any) are not decimated
+            blockmedian_outside_mask(Di, blockmedian_scale, no_decimation_mask)
         if Di.size==0:
             continue
         this_sensor_number += 1
@@ -273,7 +276,7 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
 
         # get metadata
         if read_basis_vectors:
-            meta=LS.get_pgc(Di.filename, pgc_url_file, targets=['meta'])['meta']
+            meta=aF.get_pgc(Di.filename, pgc_url_file, targets=['meta'])['meta']
             meta['xform'], meta['poly'] = get_DEM_ATC_xform(meta)
         meta['sensor'] = this_sensor_number
         meta['filename'] = Di.filename
@@ -319,10 +322,10 @@ def regen_DEM_meta(xy0, W, data, save_file, gI_files, read_basis_vectors=True,
             query = pc.geoIndex().from_file(this_file, read_file=False)\
                     .query_xy_box(xy0[0]+pad,
                                   xy0[1]+pad, \
-                                      get_data=False, full_path=True)
-            #file_list += [os.path.join(os.path.dirname(this_file), ff)
-            #           for ff in query.keys()]
-            file_list += list(query.keys())
+                                      get_data=False,
+                                      full_path=True)
+            if query is not None:
+                file_list += list(query.keys())
         except Exception as e:
             print(e)
             if VERBOSE:
@@ -341,7 +344,7 @@ def regen_DEM_meta(xy0, W, data, save_file, gI_files, read_basis_vectors=True,
             if 'SETSM' not in thebase:
                 continue
             if read_basis_vectors:
-                meta=LS.get_pgc(file_dict[thebase], pgc_url_file, targets=['meta'])['meta']
+                meta=aF.get_pgc(file_dict[thebase], pgc_url_file, targets=['meta'])['meta']
                 meta['xform'], meta['poly'] = get_DEM_ATC_xform(meta)
             meta['sensor'] = this_sensor_number
             meta['filename'] = file_dict[thebase]

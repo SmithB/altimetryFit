@@ -5,35 +5,21 @@ Created on Mon Jun 19 20:07:43 2023
 
 @author: ben
 """
-import sys
-import re
 import os
 
-threads_re=re.compile("THREADS=(\S+)")
-n_threads="1"
-for arg in sys.argv:
-    try:
-        n_threads=str(threads_re.search(arg).group(1))
-    except Exception:
-        pass
+if __name__ == '__main__':
+    # run as a script, set the thread counts before numpy loads.  (This module
+    # is imported by altimetryFit/__init__.py, and an import should not
+    # change them.)
+    from altimetryFit.set_threads import set_threads
+    set_threads()
 
-os.environ["MKL_NUM_THREADS"]=n_threads
-os.environ["OPENBLAS_NUM_THREADS"]=n_threads
-
-import matplotlib.pyplot as plt
 import numpy as np
-import pyproj
 import os
-import geopandas as gpd
-import pyproj
 import sparseqr
 import scipy.sparse as sp
-from altimetryFit import get_pgc
 import LSsurf as LS
-import glob
 import pointCollection as pc
-import geopandas
-import LSsurf as LS
 import json
 
 def get_residuals(DEM_file):

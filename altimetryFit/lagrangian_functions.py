@@ -13,21 +13,86 @@ import os
 import glob
 import h5py
 import pointAdvection
+import LSsurf
+
 
 def get_xy01_grids(interpolator_save_files, bounds):
-    SPY=365.25*24*3600
-    xy0_obj=pc.grid.mosaic().from_list(interpolator_save_files, bounds=bounds, group='xy0')
-    xy1_obj=pc.grid.mosaic().from_list(interpolator_save_files, bounds=bounds, group='xy1')
-    xy0_obj.years_to_time=SPY
-    with h5py.File(interpolator_save_files[0],'r') as h5f:
+
+    SPY = 365.25*24*3600
+    xy0_obj = pc.grid.mosaic().from_list(
+        interpolator_save_files, bounds=bounds, group='xy0')
+    xy1_obj = pc.grid.mosaic().from_list(
+        interpolator_save_files, bounds=bounds, group='xy1')
+    xy0_obj.years_to_time = SPY
+    with h5py.File(interpolator_save_files[0], 'r') as h5f:
         try:
-            if h5f['xy0']['t'].attrs['units']=='years':
-                print("years!")
+            if h5f['xy0']['t'].attrs['units'] == 'years':
                 xy0_obj.years_to_time = 1
                 xy1_obj.years_to_time = 1
         except:
             pass
     return xy0_obj, xy1_obj
+
+def setup_lagrangian_fit(data, grids, G_data, constraint_ops_list, args=None, **params):
+
+    bds = {coord: args['ctr'][coord] +
+           np.array([-0.5, 0.5])*args['W'][coord] for coord in ('x', 'y', 't')}
+
+    grids['lagrangian_dz'] = fd_grid([bds['y'], bds['x']],
+                                     [args['spacing']['lagrangian_dz'],
+                                         args['spacing']['lagrangian_dz']],
+                                     name='lagrangian_dz', col_0=G_data.col_N,
+                                     srs_proj4=args['srs_proj4'])
+
+    E_RMS = args['E_RMS']
+
+    coords = np.c_[[getattr(data, field) for field in params['coords']]]
+    G_data.add(
+        LSsurf.lin_op(grids['lagrangian_dz'], name='interp_lagrangian_dz')
+        .interp_mtx( coords, bounds_error=False))
+
+    if 'lagrangian_dz' in E_RMS and E_RMS['lagrangian_dz'] is not None:
+        root_A_lag = np.sqrt(
+            grids['lagrangian_dz'].delta[0]*grids['lagrangian_dz'].delta[1])
+        lag_dz = LSsurf.lin_op(
+            grids['lagrangian_dz'],
+            name='lagrangian_rms')\
+            .one(DOF='lagrangian_dz')
+        lag_dz.expected = np.zeros(lag_dz.N_eq) + \
+            E_RMS['lagrangian_dz']/root_A_lag
+        constraint_ops_list += [lag_dz]
+
+    if 'lagrangian_dzdx' in E_RMS and E_RMS['lagrangian_dzdx'] is not None:
+        root_A_lag = np.sqrt(
+            grids['lagrangian_dz'].delta[0]*grids['lagrangian_dz'].delta[1])
+        grad_lag_dz = LSsurf.lin_op(
+            grids['lagrangian_dz'],
+            name='lagrangian_rms_grad')\
+            .grad(DOF='lagrangian_dz')
+        grad_lag_dz.expected = np.zeros(
+            grad_lag_dz.N_eq) + E_RMS['lagrangian_dzdx']/root_A_lag
+        constraint_ops_list += [grad_lag_dz]
+
+def parse_lagrangian_fit(m0, G_data, grids, sigma=False):
+    m = {}
+    shp = grids['lagrangian_dz'].shape
+
+    if sigma:
+        key = 'sigma_lagrangian_dz'
+    else:
+        key = 'lagrangian_dz'
+    m[key] = pc.grid.data().from_dict({
+        'x': grids['lagrangian_dz'].ctrs[1],
+        'y': grids['lagrangian_dz'].ctrs[0]})
+    if sigma:
+        m[key].assign(
+            sigma_dz = np.reshape(m0[G_data.TOC['cols']['lagrangian_dz']], shp))
+    else:
+        m[key].assign(
+            dz = np.reshape(m0[G_data.TOC['cols']['lagrangian_dz']], shp),
+            cell_area = grids['lagrangian_dz'].cell_area,
+            mask = grids['lagrangian_dz'].mask)
+    return m
 
 def setup_lagrangian(velocity_files=None, velocity_type = None, lagrangian_epoch=None, reference_epoch=None,
     SRS_proj4=None, xy0=None, Wxy=None, t_span=None, spacing=None, verbose=False,
@@ -104,6 +169,102 @@ def apply_lagrangian_masks(data, x, y, mask_files=None, **kwargs):
         data.index(keep)
 
 
+def advect_mask(mask_data, t_span=None, spacing=None, mask_spacing=None, max_substeps=10,
+                xy0=None, Wxy=None, lagrangian_epoch=None, xy0_obj=None, xy1_obj=None,
+                lagrangian_zero_velocity=False, verbose=False, **kwargs):
+    '''
+    Map an eulerian mask into the lagrangian frame of a full-lagrangian fit
+
+    The nodes of a grid in lagrangian coordinates (parcel positions at
+    lagrangian_epoch) are advected through the time span of the fit, and the
+    mask is sampled at each parcel's position (and, for a mask with a time
+    dimension, at the time).  A parcel is inside the mask where the sampled
+    value is greater than 0.5.
+
+    Parameters
+    ----------
+    mask_data : pointCollection.grid.data
+        eulerian mask, optionally with a time dimension (t, in decimal years)
+    t_span : iterable
+        start and end of the fit (decimal years)
+    spacing : dict
+        grid spacing of the fit, with entries 'dz' and 'dt'.  The time-varying
+        mask is sampled at the epochs of the dz grid.
+    mask_spacing : float, optional
+        spacing of the lagrangian mask grid.  The default is spacing['dz']/2,
+        which puts mask nodes on the dz nodes.
+    max_substeps : int, optional
+        Between epochs, parcels are also sampled at substeps short enough that
+        they move less than mask_spacing between samples, up to this many per
+        epoch.  The substeps only affect mask_any.  The default is 10.
+    xy0, Wxy, lagrangian_epoch, xy0_obj, xy1_obj, lagrangian_zero_velocity :
+        lagrangian parameters, as returned by setup_lagrangian
+    verbose : bool, optional
+        if True, report the number of substeps.  The default is False.
+
+    Returns
+    -------
+    mask_epochs : pointCollection.grid.data
+        (y, x, t) mask, true where the parcel is inside mask_data at each dz epoch
+    mask_any : pointCollection.grid.data
+        (y, x) mask, true where the parcel is inside mask_data at any time
+        during the fit
+    '''
+    if lagrangian_epoch is None:
+        raise ValueError('advect_mask: lagrangian_epoch must be specified')
+    if mask_spacing is None:
+        mask_spacing = spacing['dz']/2
+    # lagrangian grid covering the domain, padded by two cells
+    pad = 2*mask_spacing
+    x = np.arange(xy0[0]-Wxy/2-pad, xy0[0]+Wxy/2+pad+mask_spacing/2, mask_spacing)
+    y = np.arange(xy0[1]-Wxy/2-pad, xy0[1]+Wxy/2+pad+mask_spacing/2, mask_spacing)
+    yg, xg = np.meshgrid(y, x, indexing='ij')
+    xg, yg = xg.ravel(), yg.ravel()
+    # the dz epochs, calculated as they are for the dz grid
+    t_epochs = fd_grid([np.array(t_span)], [spacing['dt']], name='t').ctrs[0]
+    mask_is_3d = len(mask_data.shape) == 3
+
+    def positions(t):
+        # positions of the parcels at time t
+        if lagrangian_zero_velocity:
+            return xg, yg
+        tt = np.zeros_like(xg) + (t - lagrangian_epoch)*xy0_obj.years_to_time
+        return xy1_obj.interp(xg, yg, tt, field='x1'), xy1_obj.interp(xg, yg, tt, field='y1')
+
+    def inside(xx, yy, t):
+        if mask_is_3d:
+            mask_i = mask_data.interp(xx, yy, np.zeros_like(xx)+t)
+        else:
+            mask_i = mask_data.interp(xx, yy)
+        return np.nan_to_num(mask_i) > 0.5
+
+    inside_epochs = np.zeros((len(y), len(x), len(t_epochs)), dtype=bool)
+    max_step = 0
+    last = None
+    for k, t in enumerate(t_epochs):
+        xx, yy = positions(t)
+        inside_epochs[:, :, k] = inside(xx, yy, t).reshape(len(y), len(x))
+        if last is not None:
+            step = np.abs((xx-last[0]) + 1j*(yy-last[1]))
+            if np.any(np.isfinite(step)):
+                max_step = np.maximum(max_step, np.nanmax(step))
+        last = (xx, yy)
+    inside_any = np.any(inside_epochs, axis=2)
+
+    # substeps between epochs, so that parcels that are inside the mask only
+    # between epochs are included in mask_any
+    n_sub = int(np.clip(np.ceil(max_step/mask_spacing), 1, max_substeps))
+    if verbose:
+        print(f'advect_mask: parcels move up to {max_step:0.0f} m between epochs, using {n_sub} substeps per epoch')
+    for t0 in t_epochs[:-1]:
+        for t in t0 + spacing['dt']*np.arange(1, n_sub)/n_sub:
+            inside_any |= inside(*positions(t), t).reshape(len(y), len(x))
+
+    mask_epochs = pc.grid.data().from_dict({'x':x, 'y':y, 't':t_epochs, 'z':inside_epochs})
+    mask_any = pc.grid.data().from_dict({'x':x, 'y':y, 'z':inside_any})
+    return mask_epochs, mask_any
+
+
 def update_data_for_lagrangian(data, lagrangian_ref_dem=None, mask_data=None, **kwargs):
     # default keyword arguments
     kwargs.setdefault('advection_obj', pointAdvection.advection())
@@ -127,14 +288,17 @@ def update_data_for_lagrangian(data, lagrangian_ref_dem=None, mask_data=None, **
     t_lag = (data.time - kwargs['lagrangian_epoch'])*kwargs['xy0_obj'].years_to_time
 
     if kwargs['reread_data'] and 'x_lag' in data.fields:
-        # we're using data that has been reread from a previous run.
-        data.assign(x_original = data.x.copy())
-        data.assign(y_original = data.y.copy())
-        data.x = data.x_lag.copy()
-        data.y = data.y_lag.copy()
-        data.fields.remove('x_lag')
-        data.fields.remove('y_lag')
+        if 'move_points' in kwargs and kwargs['move_points']:
+            # if we are using data that was read from a previous fit in full
+            # lagrangian mode, copy the 'x_lag' and 'y_lag' fields to 'x' and 'y'
+            data.assign(x_original = data.x.copy())
+            data.assign(y_original = data.y.copy())
+            data.x = data.x_lag.copy()
+            data.y = data.y_lag.copy()
+            data.fields.remove('x_lag')
+            data.fields.remove('y_lag')
         out_args=kwargs
+        # if we are not moving the points, do nothing.
         return out_args
 
     if not kwargs['lagrangian_zero_velocity']:

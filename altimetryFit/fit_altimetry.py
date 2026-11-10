@@ -13,25 +13,23 @@ April 2023: SmithB merged lagrangian code into fit_altimetry.py
 January 2026: Lagrangian update functions moved to lagrangian_functions.py
 """
 
+from altimetryFit.lagrangian_functions import setup_lagrangian, \
+    update_data_for_lagrangian, \
+    advect_mask, \
+    update_output_data_for_lagrangian,\
+    setup_lagrangian_fit,\
+    parse_lagrangian_fit
+import json
+import glob
+import h5py
 import resource
 import os
 import sys
 import re
+import altimetryFit as aF
 
-threads_re=re.compile(r"THREADS=(\S+)")
-n_threads="1"
-for arg in sys.argv:
-    try:
-        n_threads=str(threads_re.search(arg).group(1))
-    except Exception:
-        pass
-if n_threads=="1" and "SLURM_NTASKS" in os.environ:
-    n_threads=os.environ['SLURM_NTASKS']
-    print(f"n_threads={n_threads}")
-os.environ["MKL_NUM_THREADS"]=n_threads
-os.environ["OPENBLAS_NUM_THREADS"]=n_threads
-os.environ['NUMEXPR_NUM_THREADS']=n_threads
-os.environ['OMP_NUM_THREADS']=n_threads
+# The BLAS/OpenMP thread-count environment variables are set from --THREADS
+# in altimetryFit/__init__.py (see set_threads.py), before numpy is imported.
 
 
 #import warnings
@@ -40,6 +38,8 @@ os.environ['OMP_NUM_THREADS']=n_threads
 import numpy as np
 from LSsurf.smooth_fit import smooth_fit
 from LSsurf import fd_grid
+from LSsurf.grid_functions import resolve_mask_roles
+from LSsurf.fine_grid_functions import fine_grid_args_for_errors, fine_errors_to_grid
 from altimetryFit.reread_data_from_fits import reread_data_from_fits
 import pointCollection as pc
 try:
@@ -52,16 +52,13 @@ except Exception:
     pass
 from altimetryFit import SMB_corr_from_grid
 from altimetryFit.read_optical import read_optical_data, laser_key
+from altimetryFit.decimation_mask import read_no_decimation_mask, in_no_decimation_mask
 from altimetryFit.read_DEM_data import regen_DEM_meta
 from altimetryFit.read_CS2_data import read_CS2_data, radar_key
 from altimetryFit.apply_tides import apply_tides
-from altimetryFit.mask_functions import mask_data_by_year, update_mask_data_andor, setup_gzone_relax, apply_tide_mask_keep
+from altimetryFit.mask_functions import mask_data_by_year, setup_gzone_relax, \
+    make_default_mask, read_named_masks, mask_is_empty
 
-import h5py
-import sys
-import glob
-import json
-from altimetryFit.lagrangian_functions import setup_lagrangian, update_data_for_lagrangian, update_output_data_for_lagrangian
 
 def set_memory_limit(max_bytes):
     '''
@@ -86,7 +83,7 @@ def make_sensor_dict(h5_file, data=None):
         sensor_re=re.compile(r'sensor_(\d+)')
         for sensor_key, sensor in h5f['/meta/sensors/'].attrs.items():
             sensor_num=int(sensor_re.search(sensor_key).group(1))
-            if data is not None and not np.in1d(sensor_num, data.sensor):
+            if data is not None and not np.isin(sensor_num, data.sensor):
                 continue
             this_sensor_dict[sensor_num]=sensor
     return this_sensor_dict
@@ -177,15 +174,21 @@ def save_fit_to_file(S,  filename, sensor_dict = None, dzdt_lags = None,
                 h5f['/meta/sensors'].attrs['sensor_%d' % key]=sensor_dict[key]
         if 'sensor_bias_grids' in S['m'] and 'grid_bias' not in h5f:
             h5f.create_group('/grid_bias')
-        if 'jitter_bias_grids' in S['m'] and 'jitter_bias' not in h5f:
+        if 'jitter_bias' in S['m'] and 'jitter_bias' not in h5f:
             h5f.create_group('/jitter_bias')
+
+        def safer_JSON_encoder(obj):
+            try:
+                return json.JSONEncoder().default(obj)
+            except TypeError:
+                return(str(obj))
         if args is not None:
             if 'input_args' not in h5f['/meta/']:
                 h5f.create_group('/meta/input_args')
                 for name, val in args.__dict__.items():
                     if val is not None:
                         if isinstance(val, dict):
-                            val=json.dumps(val)
+                            val=json.dumps(val, default= safer_JSON_encoder)
                         try:
                             h5f['/meta/input_args'].attrs[name]=val
                         except Exception as e:
@@ -195,10 +198,10 @@ def save_fit_to_file(S,  filename, sensor_dict = None, dzdt_lags = None,
     if 'sensor_bias_grids' in S['m']:
         for name, ds in S['m']['sensor_bias_grids'].items():
                 ds.to_h5(filename, group='/grid_bias/'+name)
-    if 'jitter_bias_grids' in S['m']:
-        for name, ds in S['m']['jitter_bias_grids'].items():
+    if 'jitter_bias' in S['m']:
+        for name, ds in S['m']['jitter_bias'].items():
                 ds.to_h5(filename, group='/jitter_bias/'+name)
-    for key , ds in S['m'].items():
+    for key, ds in S['m'].items():
         if isinstance(ds, pc.grid.data):
                 ds.to_h5(filename, group=key)
 
@@ -207,9 +210,9 @@ def assign_sigma_corr(D, orbital_sensors=[-2, -1, 1, 2], airborne_sensors=[3, 3.
     delta_t_corr={'airborne':60*10/(24*3600*365.25),
                   'orbital':10/(24*3600*365.25)}
     time_corr=D.time.copy()
-    these=np.flatnonzero(np.in1d(D.sensor, orbital_sensors))
+    these=np.flatnonzero(np.isin(D.sensor, orbital_sensors))
     time_corr[these]=np.floor(D.time[these]/delta_t_corr['orbital'])*delta_t_corr['orbital']
-    these=np.flatnonzero(np.in1d(D.sensor, airborne_sensors))
+    these=np.flatnonzero(np.isin(D.sensor, airborne_sensors))
     time_corr[these]=np.floor(D.time[these]/delta_t_corr['airborne'])*delta_t_corr['airborne']
     D.assign({'time_corr':time_corr})
     _, sensor_dict=pc.unique_by_rows(np.c_[D.sensor, D.time_corr], return_dict=True)
@@ -223,6 +226,24 @@ def assign_sigma_corr(D, orbital_sensors=[-2, -1, 1, 2], airborne_sensors=[3, 3.
             mean_slope=0
         D.sigma_corr[ind] = np.sqrt(D.sigma_corr[ind]**2 +
                                     (mean_slope*5)**2)
+
+def fine_errors_to_fit_grid(E, field, filename):
+    '''
+    Interpolate errors for a fine grid onto the fine grid of the fit in filename
+
+    The fit's grid is read from the group named by the field without 'sigma_'.
+    If the file or the group does not exist, E is returned unchanged.
+    '''
+    group = field.replace('sigma_', '')
+    if not os.path.isfile(filename):
+        return E
+    with h5py.File(filename, 'r') as h5f:
+        if group not in h5f:
+            return E
+        coords = {coord: np.array(h5f[group][coord]) for coord in ['x', 'y', 'time'] if coord in h5f[group]}
+        valid = np.isfinite(np.array(h5f[group][group]))
+    return pc.grid.data().from_dict(coords | {
+        field: fine_errors_to_grid(E, coords['x'], coords['y'], field=field, valid=valid)})
 
 def save_errors_to_file( S, filename):
 
@@ -244,6 +265,23 @@ def save_errors_to_file( S, filename):
                 h5f.create_dataset('/bias/sigma/'+key, data=S['E']['sigma_bias'][key])
     return
 
+def no_fit_file_name(out_name):
+    # written by the fit, in place of out_name, when the tile has nothing to fit
+    return os.path.splitext(out_name)[0] + '.no_data'
+
+def write_no_fit_file(no_fit_file, reason):
+    """
+    Record that the tile had nothing to fit, and why.
+
+    Queues run the fit and its --calc_error_for_xy step joined by ';', so the
+    job's exit code is the error step's.  This file tells the error step that
+    a missing tile file means no data (exit 0) rather than a failed fit (exit 1).
+    """
+    if no_fit_file is None:
+        return
+    with open(no_fit_file, 'w') as fh:
+        fh.write(reason + '\n')
+
 def fit_altimetry(xy0=None, Width=4e4, \
             reread_file=None,\
             data=None,\
@@ -262,11 +300,13 @@ def fit_altimetry(xy0=None, Width=4e4, \
             E_slope_bias=1.e-5, \
             sensor_dict={}, \
             out_name=None, \
+            no_fit_file=None, \
             bias_nsigma_edit=None, \
             bias_nsigma_iteration=3,\
             prior_edge_args=None,\
             replace=False, \
             xy_bias_file=None,\
+            no_decimation_mask_file=None,\
             tide_mask_keep_val=None,\
             tide_mask_keep_buffer=None,\
             firn_fixed=False, firn_rescale=False, \
@@ -278,6 +318,12 @@ def fit_altimetry(xy0=None, Width=4e4, \
             DEM_t_buffer=None,\
             geoid_file=None,\
             mask_file=None, \
+            masks=None, \
+            grid_masks=None, \
+            data_mask=None, \
+            lagrangian_grid_masks=False, \
+            lagrangian_mask_spacing=None, \
+            erode_source_mask=True,\
             mask_zero_scale=10,\
             and_mask_files=None, \
             or_mask_files=None, \
@@ -293,6 +339,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
             extra_error=None,\
             repeat_res=None,\
             tide_mask_file=None,\
+            tide_mask_shelf_val=None,\
             gzone_relax_scale=None,\
             error_res_scale=None,\
             avg_mask_directory=None, \
@@ -309,20 +356,55 @@ def fit_altimetry(xy0=None, Width=4e4, \
             reference_DEM_file = None,\
             reference_DEM_uncertainty = None,\
             reference_DEM_offset = 0, \
+            reference_DEM_add_geoid=False,
             DEM_dt_min=None,\
             converge_tol_frac=0.005,\
             params=None,\
             DEM_grid_bias_params=None,\
             DEM_sigma_corr=20,\
+            solver='cholmod',\
+            cholmod_scale_columns=True,\
+            cholmod_cache_ordering=False,\
+            fine_grid_args=None,\
             THREADS=1):
     """
         Wrapper for smooth_fit that can find data and set the appropriate parameters
+
+        Masks:
+            The mask built from mask_file (or all ones), tide_mask_keep_val, and
+            and_mask_files/or_mask_files is named 'default'.  Other masks can be
+            given in masks, a dictionary mapping mask names to pointCollection.grid.data
+            objects or to mask files (1 inside the mask).  Masks are assigned roles with:
+                grid_masks: dictionary mapping grid names ('z0', 'dz') to mask names
+                data_mask: name of the mask used to select data.  Data are used
+                    where this mask is greater than 0.5 at the location (and, for a
+                    mask with a time dimension, the time) of the measurement.  For
+                    full-lagrangian fits, this is the location before advection.
+            Roles that are not assigned use the default mask.  If no roles are
+            assigned, the default mask is used for everything, as it was before
+            roles were introduced.
+
+            In a full-lagrangian fit, two more masks can be used for the grids,
+            made by advecting the nodes of the (lagrangian) model grid through
+            the time span of the fit and sampling the data mask at the parcel
+            positions (see lagrangian_functions.advect_mask):
+                'advected_any': parcels that are inside the data mask at any
+                    time during the fit
+                'advected': (time-varying) parcels that are inside the data
+                    mask at each epoch
+            lagrangian_grid_masks=True is short for
+            grid_masks={'z0':'advected_any', 'dz':'advected'} (grids assigned
+            in grid_masks keep their assignment).  For a floating-ice data mask,
+            the model includes every parcel that floats at some time during the
+            fit, and the dz mask shows when each parcel is grounded.
+            lagrangian_mask_spacing sets the spacing of the advected masks
+            (default: half the dz spacing).
     """
     print("fit_OIB: working on %s" % out_name)
 
     # default:
-    lagrangian_coords=None
-
+    lagrangian_coords = None
+    sensor_grid_bias_params = []
     SRS_proj4=get_SRS_proj4(hemisphere)
     bias_model_args={}
 
@@ -351,13 +433,30 @@ def fit_altimetry(xy0=None, Width=4e4, \
         repeat_res=None
 
     pad=np.array([-1.e4, 1.e4])
-    if mask_file is not None:
-        mask_data=pc.grid.data().from_file(mask_file,bounds=[bds['x']+pad, bds['y']+pad])
-    else:
-        bds_pad=[jj+pad for jj in bds.values()]
-        mask_data=pc.grid.data().from_dict({'x':np.arange(bds_pad[0][0], bds_pad[0][1]+.1, spacing['dz']),
-                                            'y':np.arange(bds_pad[1][0], bds_pad[1][1]+.1, spacing['dz'])})
-        mask_data.assign(z=np.ones((len(mask_data.x), len(mask_data.y))))
+    # the default mask
+    default_mask_args = {'mask_file':mask_file,
+                         'spacing':spacing['dz'],
+                         'tide_mask_keep_val':tide_mask_keep_val,
+                         'tide_mask_keep_buffer':tide_mask_keep_buffer,
+                         'tide_mask_file':tide_mask_file,
+                         'and_mask_files':and_mask_files,
+                         'or_mask_files':or_mask_files}
+    mask_data = make_default_mask([bds['x']+pad, bds['y']+pad], **default_mask_args)
+
+    # masks can be assigned to the grids and to data selection (see the docstring)
+    advected_mask_names = ('advected', 'advected_any')
+    if lagrangian_grid_masks:
+        grid_masks = {'z0':'advected_any', 'dz':'advected', **(grid_masks or {})}
+    mask_roles_assigned = grid_masks is not None or data_mask is not None
+    if masks is not None:
+        reserved = [name for name in masks if name in ('default',) + advected_mask_names]
+        if reserved:
+            raise ValueError(f"the mask names {reserved} are reserved: 'default' is the mask built from mask_file, "
+                             "tide_mask_keep_val, and and_mask_files/or_mask_files, and "
+                             f"{advected_mask_names} are made by advecting the data mask")
+        if not mask_roles_assigned:
+            print("fit_altimetry: masks were given, but none is assigned to a grid or to data selection "
+                  "(see grid_masks and data_mask), so the default mask will be used for everything")
 
     constraint_scaling_maps={}
     if d2z_dt2_scale_file is not None:
@@ -374,19 +473,14 @@ def fit_altimetry(xy0=None, Width=4e4, \
                               tide_mask_file,
                               bds,
                               spacing,
-                              constraint_scaling_maps)
+                              constraint_scaling_maps,
+                              tide_mask_shelf_val = tide_mask_shelf_val)
 
-    apply_tide_mask_keep(tide_mask_keep_val,
-                         buffer_W=tide_mask_keep_buffer,
-                         mask_data=mask_data,
-                         tide_mask_file=tide_mask_file)
-
-    if and_mask_files is not None or or_mask_files is not None:
-        update_mask_data_andor(mask_data, and_mask_files, or_mask_files)
-
-    if np.all(mask_data.z==0):
+    # if the masks have roles, the masks are checked after the lagrangian setup
+    if not mask_roles_assigned and np.all(mask_data.z==0):
         if verbose:
             print("no points in mask, returning")
+        write_no_fit_file(no_fit_file, "no points in mask")
         return None, None, None
 
     if lagrangian_dict is not None:
@@ -404,9 +498,56 @@ def fit_altimetry(xy0=None, Width=4e4, \
             E_RMS0['lagrangian_dz'] = lagrangian_dict['lagrangian_dz_E_RMS']
             E_RMS0['lagrangian_dzdx'] = lagrangian_dict['lagrangian_dz_E_RMS_grad']
             lagrangian_coords=['y_lag','x_lag']
+            sensor_grid_bias_params.append({
+                'name' : 'lagrangian_dz',
+                'sensor' : None,
+                'coords' : lagrangian_coords,
+                'setup_function' : setup_lagrangian_fit,
+                'parsing_function' : parse_lagrangian_fit
+                })
         else:
             # move points by default
             lagrangian_dict['move_points'] = True
+            DEM_grid_bias_params['coords'] = ['x_original','y_original']
+    full_lagrangian = lagrangian_dict is not None and lagrangian_dict['move_points']
+
+    # the mask used to select data.  Without roles, this is the default mask
+    data_selection_mask = mask_data
+    if mask_roles_assigned:
+        mask_bounds = [bds['x']+pad, bds['y']+pad]
+        if full_lagrangian:
+            # data are selected where they were measured, which can be anywhere
+            # that the tile's parcels were during the fit.  The bounds grow by
+            # whole multiples of the dz spacing, so that an all-ones default mask
+            # has the same nodes as it does without roles
+            dx = spacing['dz']
+            mask_bounds = [mb + np.array([-1, 1])*dx*np.ceil(np.maximum(0, [mb[0]-(lb[0]+pad[0]), lb[1]+pad[1]-mb[1]])/dx)
+                           for mb, lb in zip(mask_bounds, lagrangian_dict['bds'])]
+            mask_data = make_default_mask(mask_bounds, **default_mask_args)
+        mask_dict = {'default':mask_data}
+        if masks is not None:
+            mask_dict.update(read_named_masks(masks, mask_bounds))
+        if any(name in advected_mask_names for name in (grid_masks or {}).values()):
+            if not full_lagrangian:
+                raise ValueError(f"the masks {advected_mask_names} can only be used in full-lagrangian fits")
+            data_mask_name = 'default' if data_mask is None else data_mask
+            if data_mask_name not in mask_dict:
+                raise ValueError(f'data mask "{data_mask_name}" is not in the masks, which are {list(mask_dict)}')
+            mask_dict['advected'], mask_dict['advected_any'] = advect_mask(
+                mask_dict[data_mask_name], t_span=t_span, spacing=spacing,
+                mask_spacing=lagrangian_mask_spacing, verbose=verbose, **lagrangian_dict)
+        if data_mask in advected_mask_names:
+            raise ValueError(f"the masks {advected_mask_names} cannot be used as the data mask")
+        role_names = resolve_mask_roles(mask_dict, grid_masks=grid_masks, data_mask=data_mask)
+        if verbose:
+            print("fit_altimetry: masks: " + ', '.join([f'{role}:{name}' for role, name in role_names.items()]))
+        data_selection_mask = mask_dict[role_names['data']]
+        if mask_is_empty(data_selection_mask) or \
+                (mask_is_empty(mask_dict[role_names['z0']]) and mask_is_empty(mask_dict[role_names['dz']])):
+            if verbose:
+                print("no points in mask, returning")
+            write_no_fit_file(no_fit_file, "no points in mask")
+            return None, None, None
 
     pgc_url_file=None
     default_data_fields=['x','y','z','time','sigma','sigma_corr',
@@ -425,8 +566,11 @@ def fit_altimetry(xy0=None, Width=4e4, \
         #xy0=[float(re_match.group(ii))*1000 for ii in [1, 2]]
         xy0=[ctr['x'], ctr['y']]
         data=pc.data().from_h5(reread_file, group='data')
-        #TEST: crop the data in case we're rereading subsets
-        data.crop((xy0[0]+np.array([-1, 1])*W['x']/2, xy0[1]+np.array([-1, 1])*W['y']/2))
+        if lagrangian_dict is None or not lagrangian_dict['move_points']:
+            #crop the data in case we're rereading subsets, skip if this is a full lagrangian fit.
+            if verbose:
+                print("fit_altimetry.py: cropping data to model domain")
+            data.crop((xy0[0]+np.array([-1, 1])*W['x']/2, xy0[1]+np.array([-1, 1])*W['y']/2))
         sensor_dict=make_sensor_dict(reread_file, data)
         DEM_meta_dict={}
         if 'DEM' in GI_files:
@@ -436,13 +580,16 @@ def fit_altimetry(xy0=None, Width=4e4, \
     elif reread_dirs is None:
         if lagrangian_dict is not None and lagrangian_dict['move_points']:
             this_xy0=[*map(np.mean, lagrangian_dict['bds'])]
-            this_W={'x':np.diff(lagrangian_dict['bds'][0]),
-                           'y':np.diff(lagrangian_dict['bds'][1]),
+            # scalar widths: numpy >= 2.5 won't convert the 1-element output of np.diff to a scalar
+            this_W={'x':np.diff(lagrangian_dict['bds'][0])[0],
+                           'y':np.diff(lagrangian_dict['bds'][1])[0],
                            't':W['t']}
         else:
             this_xy0, this_W = [xy0, W]
+
         if DEM_grid_bias_params is not None and 'jitter_url_list_file' in DEM_grid_bias_params:
             pgc_url_file=DEM_grid_bias_params['jitter_url_list_file']
+
         D, sensor_dict, DEM_meta_dict = read_optical_data(\
                                 this_xy0, this_W,\
                                 GI_files=GI_files, \
@@ -464,19 +611,27 @@ def fit_altimetry(xy0=None, Width=4e4, \
                                 hemisphere=hemisphere,
                                 problem_DEM_files=problem_DEM_files,
                                 seg_diff_tol=seg_diff_tol,
-                                xy_bias_file=xy_bias_file)
-
+                                xy_bias_file=xy_bias_file,
+                                no_decimation_mask=no_decimation_mask_file)
 
         if sensor_dict is None:
             sensor_dict={}
 
         if 'POCA' in GI_files:
+            # read_optical_data returns D=None if it found no optical data
             if D is None:
                 D=[]
             sensor_dict.update( {val:key for key,val in radar_key().items()})
             D += read_CS2_data(xy0, W, GI_files, apply_filters=True,
                 DEM_file=DEM_file, dem_tol=DEM_tol, bias_lookup_dir=params['CS2']['bias_lookup_dir'],
                 sensor_dict=radar_key(), POCA_sensor=radar_key()['CS2_POCA'])
+
+        if D is None or all(Di is None for Di in D):
+            if verbose:
+                print("no data read, returning")
+            write_no_fit_file(no_fit_file, "no data read")
+            return None, None, None
+
         for ind, Di in enumerate(D):
             if Di is None:
                 continue
@@ -487,16 +642,20 @@ def fit_altimetry(xy0=None, Width=4e4, \
         data=pc.data(fields = default_data_fields).from_list(D)
         data.assign({'day':np.floor(data.time*365.25)})
 
+        if no_decimation_mask_file is not None:
+            # flag the data inside the no-decimation mask (evaluated, as in the readers, at the
+            # measurement positions and times), so that they get their own sigma_extra
+            no_decimation_mask = read_no_decimation_mask(no_decimation_mask_file, this_xy0, this_W)
+            data.assign({'no_decimation':
+                         in_no_decimation_mask(no_decimation_mask, data.x, data.y, data.time).astype(float)})
+
         if data.size==0:
             print("No data found, returning")
+            write_no_fit_file(no_fit_file, "no data found")
             return None, None, None
 
         # apply the tides if a directory has been provided
         if tide_mask_file is not None:
-            if hemisphere==1:
-                EPSG=3413
-            else:
-                EPSG=3031
             if lagrangian_dict is not None and lagrangian_dict['move_points']:
                 this_Wxy = np.max([*map(np.diff, data.bounds())])+5000
                 this_xy0 = [*map(np.mean, data.bounds())]
@@ -505,16 +664,15 @@ def fit_altimetry(xy0=None, Width=4e4, \
 
             apply_tides(data, this_xy0, this_Wxy,
                             tide_mask_file=tide_mask_file,
-                            tide_mask_data=None,
+                            tide_mask_shelf_val = tide_mask_shelf_val,
                             tide_directory=tide_directory,
                             tide_model=tide_model,
                             tide_adjustment = (tide_adjustment_file is not None),
                             tide_adjustment_file = tide_adjustment_file,
                             extrapolate=True,
                             cutoff=200,
-                            EPSG=EPSG)
-
-            #apply_tides( tide_mask_file, tide_directory, tide_model, EPSG=EPSG)
+                            crs = SRS_proj4,
+                            threads = THREADS)
     else:
         data, sensor_dict = reread_data_from_fits(xy0, Width, reread_dirs, template='E%d_N%d.h5')
 
@@ -527,11 +685,12 @@ def fit_altimetry(xy0=None, Width=4e4, \
         reference_epoch=len(np.arange(t_span[0], t_span[1], spacing['dt']))
 
     if lagrangian_dict is not None:
-        lagrangian_dict=update_data_for_lagrangian( data, mask_data=mask_data,
+        lagrangian_dict=update_data_for_lagrangian( data, mask_data=data_selection_mask,
             **lagrangian_dict)
         if data.size==0 or np.sum(np.isfinite(data.z))==0:
             if verbose:
                 print("After lagrangian advection, no valid data remain")
+            write_no_fit_file(no_fit_file, "no valid data after lagrangian advection")
             return None, None, None
 
     # make every dataset a double
@@ -569,11 +728,10 @@ def fit_altimetry(xy0=None, Width=4e4, \
     for val, sensor in sensor_dict.items():
         if val < 5:
             print("for %s found %d data" %(sensor, np.sum(data.sensor==val)))
-    print("for DEMs, found %d data" % np.sum(np.in1d(data.sensor, np.array(DEM_sensors))))
+    print("for DEMs, found %d data" % np.sum(np.isin(data.sensor, np.array(DEM_sensors))))
 
-    sensor_grid_bias_params=None
+    # Create a sensor_grid_bias_param structure for each sensor
     if DEM_grid_bias_params is not None:
-        sensor_grid_bias_params=[]
         for sensor in DEM_sensors:
             sensor_grid_bias_params += [{'sensor':sensor, 'expected_val':0}]
             try:
@@ -588,6 +746,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
     if data.size == 0:
         if verbose:
             print("fit_altimetry:No data found, returning")
+        write_no_fit_file(no_fit_file, "no data found after custom edits")
         return None, None, None
 
     # assign time_corr and (for laser sensors) sigma_corr
@@ -603,17 +762,30 @@ def fit_altimetry(xy0=None, Width=4e4, \
     if year_mask_dir is not None:
         mask_data_by_year(data, year_mask_dir);
 
-    #sigma_extra_masks = {'altimeter': np.in1d(data.sensor, altimeter_sensors),
-    #                     'DEM': ~np.in1d(data.sensor, altimeter_sensors)}
+    #sigma_extra_masks = {'altimeter': np.isin(data.sensor, altimeter_sensors),
+    #                     'DEM': ~np.isin(data.sensor, altimeter_sensors)}
     sigma_extra_keys={'altimeter':{'sensor':altimeter_sensors},
                       'DEM':{'sensor':DEM_sensors}}
+    if 'no_decimation' in data.fields and np.any(data.no_decimation > 0):
+        # data kept at full density (inside the no-decimation mask) have different
+        # statistics from the decimated data, so they get their own sigma_extra:
+        # sigma_extra_class is 0 for decimated altimetry, 1 for decimated DEMs, 2 and 3 at full density
+        data.assign({'sigma_extra_class': (~np.isin(data.sensor, altimeter_sensors)
+                                           + 2*(data.no_decimation > 0)).astype(float)})
+        sigma_extra_keys={'altimeter':{'sigma_extra_class':[0]},
+                          'DEM':{'sigma_extra_class':[1]},
+                          'altimeter_no_decimation':{'sigma_extra_class':[2]},
+                          'DEM_no_decimation':{'sigma_extra_class':[3]}}
     if reference_DEM_file is not None and reread_file is None:
         # N.B.  Reference DEM is subtracted AFTER firn correction
-        data.assign(z_ref = pc.grid.data().from_file(reference_DEM_file,
-                                    bounds=[xy0[0]+np.array([-0.5, 0.5])*Width,
-                                            xy0[1]+np.array([-0.5, 0.5])*Width])\
-                    .interp(data.x, data.y) + reference_DEM_offset)
-
+        reference_DEM = pc.grid.data().from_file(reference_DEM_file,
+                                    bounds=[xy0[0]+np.array([-0.55, 0.55])*Width,
+                                            xy0[1]+np.array([-0.55, 0.55])*Width])
+        if reference_DEM_add_geoid:
+            reference_DEM.z += pc.grid.data().from_file(geoid_file,
+                                                        bounds=reference_DEM.bounds(pad=1.e4))\
+                .interp(reference_DEM.x, reference_DEM.y, gridded=True)
+        data.assign(z_ref = reference_DEM.interp(data.x, data.y) + reference_DEM_offset)
         data.z -= data.z_ref
         data.index(np.isfinite(data.z))
         E_RMS0['z0'] = reference_DEM_uncertainty
@@ -622,9 +794,19 @@ def fit_altimetry(xy0=None, Width=4e4, \
     if data.size == 0:
         if verbose:
             print("fit_altimetry:No valid data found, returning")
+        write_no_fit_file(no_fit_file, "no valid data")
         return None, None, None
     print("fit_altimetry:")
     print(data.summary())
+    if mask_roles_assigned:
+        # in a full-lagrangian fit, data are selected at the locations where they were measured
+        mask_args = {'mask_file':None,
+                     'mask_data':mask_dict,
+                     'grid_masks':grid_masks,
+                     'data_mask':data_mask,
+                     'data_mask_coords':['x_original', 'y_original', 'time'] if full_lagrangian else None}
+    else:
+        mask_args = {'mask_file':mask_file, 'mask_data':mask_data}
     # run the fit
     if verbose:
         print("="*50)
@@ -637,12 +819,12 @@ def fit_altimetry(xy0=None, Width=4e4, \
                      repeat_res=repeat_res,
                      max_iterations=max_iterations,
                      srs_proj4=SRS_proj4,
-                     VERBOSE=True,
+                     VERBOSE=verbose,
                      data_slope_sensors=DEM_sensors,\
                      data_scale_fields=data_scale_fields,\
                      E_slope_bias=E_slope_bias,\
-                     mask_file=mask_file,\
-                     mask_data=mask_data,\
+                     erode_source_mask=erode_source_mask,\
+                     **mask_args,\
                      sigma_extra_relax=sigma_extra_relax,\
                      constraint_scaling_maps=constraint_scaling_maps,\
                      prior_edge_args=prior_edge_args,\
@@ -656,8 +838,11 @@ def fit_altimetry(xy0=None, Width=4e4, \
                      avg_masks=avg_masks, \
                      sigma_extra_keys=sigma_extra_keys,\
                      sensor_grid_bias_params=sensor_grid_bias_params,\
-                     lagrangian_coords=lagrangian_coords,\
                      converge_tol_frac_TSE=converge_tol_frac,
+                     solver=solver,
+                     cholmod_scale_columns=cholmod_scale_columns,
+                     cholmod_cache_ordering=cholmod_cache_ordering,
+                     fine_grid_args=fine_grid_args,
                      THREADS=THREADS)
 
     if return_fit_objects:
@@ -665,8 +850,35 @@ def fit_altimetry(xy0=None, Width=4e4, \
 
     if lagrangian_dict is not None and S['data'] is not None and S['data'].size > 0:
         update_output_data_for_lagrangian(S, **lagrangian_dict)
+        data=S['data']
 
     return S, data, sensor_dict
+
+def read_fine_grid_file(filename):
+    '''
+    Read the fine-grid parameters for smooth_fit from a json file
+
+    The file contains a dict with the entries of the LSsurf.smooth_fit
+    fine_grid_args argument (see LSsurf/fine_grid_functions.py), e.g.:
+        {"region_file": "rift_region.geojson",
+         "spacing": {"z0": 50, "dz": 100, "dt": 0.25},
+         "E_RMS": {"d2z0_dx2": 1.0, "d3z_dx2dt": 0.3, "d2z_dt2": 100}}
+    "spacing" may also be a single number, used for both fine grids (with the
+    time spacing of the dz grid).  To refine only one field, give only its
+    spacing (e.g. {"z0": 25}, or {"dz": 50, "dt": 0.25}) and only its E_RMS
+    entries; the other fine grid is then left out.  As for the coarse grids, error runs use
+    coarser fine grids: their spacings are multiplied by "error_res_scale"
+    (default {"z0": 4, "dz": 2}, only the refined fields' entries are needed;
+    1 calculates errors at the fit's resolution).
+    A relative region_file path is interpreted relative to the json file's directory.
+    '''
+    with open(filename) as fh:
+        fine_grid_args = json.load(fh)
+    if fine_grid_args.get('region_file') is not None:
+        fine_grid_args['region_file'] = os.path.join(
+            os.path.dirname(os.path.abspath(filename)),
+            os.path.expanduser(fine_grid_args['region_file']))
+    return fine_grid_args
 
 def parse_inputs(argv):
     # account for a bug in argparse that misinterprets negative agruents
@@ -711,6 +923,7 @@ def parse_inputs(argv):
     parser.add_argument('--reference_DEM_file', type=str, help='DEM that will be subtracted from data before fitting')
     parser.add_argument('--reference_DEM_offset', type=float, default=0, help='Value that will be added to the reference DEM before it is subtracted from the data')
     parser.add_argument('--reference_DEM_uncertainty', type=float, help='Uncertainty in the reference DEM is correct')
+    parser.add_argument('--reference_DEM_add_geoid', action='store_true', help="if set, add the geoid to the reference DEM before it is subtracted from the data")
     parser.add_argument('--bias_params', type=str, nargs='+', default=['time_corr','sensor','spot'])
     parser.add_argument('--DEM_grid_bias_params_file', type=path, help='file containing DEM grid bias params')
     parser.add_argument('--DEM_sigma_corr', type=float, default=20, help='tolerance for mean DEM bias, default=20')
@@ -721,6 +934,7 @@ def parse_inputs(argv):
     parser.add_argument('--bm_scale_DEM', type=float, default=200, help='blockmedian scale to apply to DEM data')
     parser.add_argument('--N_target_laser', type=float, default=200000, help='target number of laser data')
     parser.add_argument('--N_target_DEM', type=float, default=800000, help='target number of DEM data')
+    parser.add_argument('--no_decimation_mask_file', type=path, help='raster file (geotif, or h5 with fields x, y, [t,] z) that is greater than 0.5 where data are not decimated.  The decimation (blockmedian) scales are calculated from all of the data, as without the mask, but are only applied outside it.  A mask with a time dimension is evaluated at the data times (e.g. to follow features that move with the ice).  The data inside the mask get their own sigma_extra (for altimetry and for DEMs), because their statistics differ from those of the decimated data.')
     parser.add_argument('--N_target', type=str, help='specify target data count for sensors as sensor:N, with multiple arguments separated by commas')
     parser.add_argument('--extra_error', type=float)
     parser.add_argument('--DEM_file', type=path, help='DEM file to use with the DEM_tol parameter and in slope error calculations')
@@ -749,15 +963,23 @@ def parse_inputs(argv):
     parser.add_argument('--lagrangian_dz_E_RMS', type=float, help='Expected RMS for moving topography')
     parser.add_argument('--lagrangian_dz_E_RMS_grad', type=float, help='Expected RMS gradient for moving topography')
     parser.add_argument('--lagrangian_zero_velocity', action='store_true', help='If set, all parameters will match the lagrangian parameters, but velocity will be set to zero')
+    parser.add_argument('--fine_grid_file', type=path, help='json file containing parameters for fine-resolution z0 and/or dz grids that cover a region of the domain (see read_fine_grid_file; give only the z0 or only the dz spacing to refine one field).  The region must be in the coordinates of the fit (with --lagrangian, the advected coordinates at lagrangian_epoch).  When errors are calculated, the fine grids are coarsened by the json file\'s error_res_scale entry (default 4 for z0, 2 for dz), and the errors are interpolated onto the fit\'s fine grids.')
     parser.add_argument('--mask_file', type=path)
     parser.add_argument('--gzone_relax_scale', type=float, help='relax the d3z_dx2dt constraint at the grounding zone by this factor')
     parser.add_argument('--mask_zero_scale', type=float, default=10, help='constraint equations will be reduced by this factor where the mask is zero')
     parser.add_argument('--and_mask_files', type=str, nargs='+')
     parser.add_argument('--or_mask_files', type=str, nargs='+')
+    parser.add_argument('--masks', type=str, nargs='+', metavar='NAME:FILE', help="named masks (geotif, or h5 with fields x, y, [t,] z; 1 inside the mask), assigned to grids and to data selection with --grid_masks and --data_mask.  The mask built from --mask_file (or all ones), --tide_mask_keep_val, and --and_mask_files/--or_mask_files is named 'default'")
+    parser.add_argument('--grid_masks', type=str, nargs='+', metavar='GRID:NAME', help="masks for the model grids (GRID is z0 or dz).  Grids without a mask assigned use the default mask.  In full-lagrangian fits, NAME can also be advected_any or advected (see --lagrangian_grid_masks)")
+    parser.add_argument('--lagrangian_grid_masks', action='store_true', help="in a full-lagrangian fit, make the grid masks by advecting the model nodes through the time span of the fit and sampling the data mask: the z0 grid covers parcels that are inside the data mask at any time during the fit, and the (time-varying) dz mask shows whether each parcel is inside the data mask at each epoch.  The same as '--grid_masks z0:advected_any dz:advected'; grids named in --grid_masks keep their assignment")
+    parser.add_argument('--lagrangian_mask_spacing', type=float, help='spacing of the advected (lagrangian) masks.  Default: half the dz spacing')
+    parser.add_argument('--data_mask', type=str, metavar='NAME', help="mask used to select data: data are used where this mask is greater than 0.5 at the location (and, for a mask with a time dimension, the time) of the measurement.  For full-lagrangian fits, this is the location before advection.  If not set, the default mask is used")
     parser.add_argument('--geoid_file', type=path)
     parser.add_argument('--water_mask_threshold', type=float)
+    parser.add_argument('--skip_erode_source_mask', action='store_true', help='if set, do not erode the source mask before fitting')
     parser.add_argument('--year_mask_dir', type=path)
     parser.add_argument('--tide_mask_file', type=path)
+    parser.add_argument('--tide_mask_shelf_val', type=int, default=1, help='this value marks shelf points')
     parser.add_argument('--tide_directory', type=path)
     parser.add_argument('--tide_model', type=str, help='tide model name')
     parser.add_argument('--tide_adjustment_file', type=str, help='h5 file_giving scaling for tide model')
@@ -768,14 +990,34 @@ def parse_inputs(argv):
     parser.add_argument('--calc_error_for_xy', action='store_true')
     parser.add_argument('--calc_error', action='store_true')
     parser.add_argument('--avg_scales', type=str, help='scales at which to report average errors, comma-separated list, no spaces')
-    parser.add_argument('--error_res_scale','-s', type=float, nargs=2, default=[4, 2], help='if the errors are being calculated (see calc_error_file), scale the grid resolution in x and y to be coarser')
+    parser.add_argument('--error_res_scale','-s', type=float, nargs='+', default=[4, 2], help='if the errors are being calculated (see calc_error_file), scale the grid resolution in x and y to be coarser')
     parser.add_argument('--converge_tol_frac', type=float, default=0.005, help='if the fractional change between two smooth_fit iterations is less than this value, the iteration has converged')
+    parser.add_argument('--sparseqr', action='store_true', help='solve the smooth_fit iterations with sparseqr (SPQR) instead of the default cholmod (normal equations + refinement, needs scikit-sparse)')
+    parser.add_argument('--cholmod_scale_columns', action='store_true', default=True, help='scale the normal matrix to a unit diagonal before the cholmod factorization, so its rcond check measures column dependence rather than column scaling (the default)')
+    parser.add_argument('--no_cholmod_scale_columns', dest='cholmod_scale_columns', action='store_false', help='factor the unscaled normal matrix in the cholmod solve (see --cholmod_scale_columns)')
+    parser.add_argument('--cholmod_cache_ordering', action='store_true', help='compute the METIS fill-reducing ordering for the cholmod factorization in the first smooth_fit iteration only, and reuse it in the later iterations')
     parser.add_argument('--THREADS', type=int, default=1, help='number of threads to use in suitesparse calculations')
     parser.add_argument('--max_mem', type=float, default=15., help='maximum memory the program is allowed to use, in GB.')
     args, unk=parser.parse_known_args(argv)
-
+    unk=[jj for jj in unk if (len(jj)>0) and not jj[0]=='#']
     if unk:
-        print("unknown arguments:"+str([jj for jj in unk if (len(jj)>0) and not jj[0]=='#']))
+        print("unknown arguments:"+str(unk))
+
+    args.erode_source_mask = not(args.skip_erode_source_mask)
+
+    def colon_pairs(pairs, option):
+        # parse a list of KEY:VALUE arguments into a dictionary
+        out={}
+        for pair in pairs:
+            if ':' not in pair:
+                raise ValueError(f'{option} arguments should be KEY:VALUE, got {pair}')
+            key, val = pair.split(':', 1)
+            out[key]=val
+        return out
+    if args.masks is not None:
+        args.masks = {name:path(mask_file) for name, mask_file in colon_pairs(args.masks, '--masks').items()}
+    if args.grid_masks is not None:
+        args.grid_masks = colon_pairs(args.grid_masks, '--grid_masks')
 
     if args.km:
         args.xy0 = [jj*1000 for jj in args.xy0]
@@ -785,7 +1027,18 @@ def parse_inputs(argv):
 
     if args.avg_scales is not None:
         args.avg_scales = [int(temp) for temp in args.avg_scales.split(',')]
-    args.grid_spacing = [float(temp) for temp in args.grid_spacing.split(',')]
+
+    args.spacing={}
+    for dim, this_sp in zip(['z0','dz','dt'], args.grid_spacing.split(',')):
+        if '/' in this_sp:
+            # this is a fractional spacing (e.g. 1/12 year)
+            this_sp = this_sp.split('/')
+            this_sp = float(this_sp[0])/float(this_sp[1])
+        else:
+            this_sp = float(this_sp)
+        args.spacing[dim] = this_sp
+    #args.grid_spacing = [spacing['z0'], spacing['dz'], spacing['dt']]
+
     args.time_span = [float(temp) for temp in args.time_span.split(',')]
     args.dzdt_lags = [int(temp) for temp in args.dzdt_lags.split(',')]
 
@@ -793,9 +1046,8 @@ def parse_inputs(argv):
         if args.reference_time is None:
             raise(ValueError("Need to specify either reference_epoch or reference_time"))
         args.reference_epoch = np.argmin(np.abs(
-            np.arange(args.time_span[0], args.time_span[1]+0.01*args.grid_spacing[2], args.grid_spacing[2])-args.reference_time))
+            np.arange(args.time_span[0], args.time_span[1]+0.01*args.spacing['dt'], args.spacing['dt'])-args.reference_time))
 
-    args.spacing={'z0':args.grid_spacing[0], 'dz':args.grid_spacing[1], 'dt':args.grid_spacing[2]}
     args.E_RMS={'d2z0_dx2':args.E_d2z0dx2, 'd3z_dx2dt':args.E_d3zdx2dt, 'd2z_dxdt':args.E_d3zdx2dt*args.data_gap_scale,  'd2z_dt2':args.E_d2zdt2}
 
     # read in the geoIndex locations
@@ -807,8 +1059,11 @@ def parse_inputs(argv):
     else:
         args.calc_FAC_anomaly=True
 
-    if args.base_directory is None and args.reread_file is not None:
-        args.base_directory = os.path.dirname(os.path.dirname(args.reread_file))
+    if args.base_directory is None:
+        for temp in [args.reread_file, args.calc_error_file]:
+            if temp is None:
+                continue
+            args.base_directory = os.path.dirname(os.path.dirname(temp))
 
     prior_dirs=None
     if args.matched:
@@ -853,6 +1108,12 @@ def parse_inputs(argv):
     if args.calc_error_for_xy:
         args.calc_error_file=args.out_name
         if not os.path.isfile(args.out_name):
+            no_fit_file = no_fit_file_name(args.out_name)
+            if os.path.isfile(no_fit_file):
+                with open(no_fit_file) as fh:
+                    reason = fh.read().strip()
+                print(f"{args.out_name} not found: the fit had nothing to fit ({reason}), returning")
+                return 0
             print(f"{args.out_name} not found, returning")
             return 1
 
@@ -860,31 +1121,25 @@ def parse_inputs(argv):
         if args.calc_error_file is not None or  args.calc_error:
             for ii, key in enumerate(['z0','dz']):
                 args.spacing[key] *= args.error_res_scale[ii]
+            if args.lagrangian_dz_spacing is not None:
+                args.lagrangian_dz_spacing *= args.error_res_scale[2]
 
     if args.bias_params is not None and " " in args.bias_params[0]:
         args.bias_params=args.bias_params[0].split(" ")
 
+    # read in the DEM grid bias params.  These will be applied to each DEM
     args.DEM_bias_params=None
     if args.DEM_grid_bias_params_file is not None:
         # DEM_bias_params file should include key=value lines, with keys:
         #spacing, expected_rms, expected_rms_grad
-        args.DEM_bias_params={}
-        with open(args.DEM_grid_bias_params_file, 'r') as fh:
-            for line in fh:
-                if len(line.rstrip())==0:
-                    continue
-                try:
-                    if line[0]=="#":
-                        continue
-                    key, val = line.rstrip().split('=')
-                    try:
-                        # is val a float?
-                        args.DEM_bias_params[key]=float(val.split('#')[0])
-                    except ValueError:
-                        # if not, assume str
-                        args.DEM_bias_params[key]=val.split('#')[0]
-                except Exception:
-                    print("problem with DEM_bias_params line\n"+line)
+        args.DEM_bias_params=aF.bias_functions.parse_DEM_bias_params_file(args.DEM_grid_bias_params_file)
+
+    args.fine_grid_args=None
+    if args.fine_grid_file is not None:
+        args.fine_grid_args=read_fine_grid_file(args.fine_grid_file)
+        if args.calc_error_file is not None or args.calc_error:
+            # as for the coarse grids, errors are calculated with coarser fine grids
+            args.fine_grid_args=fine_grid_args_for_errors(args.fine_grid_args)
 
     args.params={}
     if args.param_files is not None:
@@ -901,7 +1156,11 @@ def parse_inputs(argv):
             pass
 
     if args.problem_DEM_files is not None:
-        args.problem_DEM_files = args.problem_DEM_files.split(',')
+        # I haven't found a cleaner way to do this:
+        temp =  args.problem_DEM_files.split(',')
+        args.problem_DEM_files = []
+        for jj in temp:
+            args.problem_DEM_files += glob.glob(jj)
     else:
         args.problem_DEM_files = []
 
@@ -911,7 +1170,7 @@ def parse_inputs(argv):
     args.lagrangian_dict=None
     if args.lagrangian:
         if args.lagrangian_epoch is None:
-            args.lagrangian_epoch = np.arange(args.time_span[0], args.time_span[1], args.grid_spacing[2])[args.reference_epoch]
+            args.lagrangian_epoch = np.arange(args.time_span[0], args.time_span[1], args.spacing['dt'])[args.reference_epoch]
         args.lagrangian_dict = {field:getattr(args, field) for field in \
                            ['velocity_files', 'velocity_type', 'lagrangian_epoch', 'lagrangian_ref_dem',
                             'lagrangian_dz_spacing', 'lagrangian_dz_E_RMS',
@@ -947,6 +1206,13 @@ def main(argv=None):
     if isinstance(args, int):
         return args
 
+    no_fit_file=None
+    if args.calc_error_file is None and not args.calc_error:
+        no_fit_file=no_fit_file_name(args.out_name)
+        # one left by an earlier run would hide a failure of this one
+        if os.path.isfile(no_fit_file):
+            os.remove(no_fit_file)
+
     S, data, sensor_dict = fit_altimetry(args.xy0, \
             Width=args.Width,
             E_RMS=args.E_RMS, \
@@ -970,14 +1236,17 @@ def main(argv=None):
             reference_DEM_file=args.reference_DEM_file,\
             reference_DEM_offset=args.reference_DEM_offset,\
             reference_DEM_uncertainty=args.reference_DEM_uncertainty,\
+            reference_DEM_add_geoid=args.reference_DEM_add_geoid,\
             problem_DEM_files=args.problem_DEM_files,\
             hemisphere=args.Hemisphere, \
             reread_dirs=args.reread_dirs, \
             out_name=args.out_name, \
+            no_fit_file=no_fit_file, \
             GI_files=args.geoIndex_dict,\
             bm_scale=args.bm_scale,\
             N_target=args.N_target,\
             xy_bias_file=args.xy_bias_file,\
+            no_decimation_mask_file=args.no_decimation_mask_file,\
             firn_directory=args.firn_directory,\
             firn_version=args.firn_version,\
             firn_correction=args.firn_model,\
@@ -988,6 +1257,11 @@ def main(argv=None):
             calc_FAC_anomaly=args.calc_FAC_anomaly,\
             lagrangian_dict=args.lagrangian_dict,\
             mask_file=args.mask_file, \
+            masks=args.masks, \
+            grid_masks=args.grid_masks, \
+            data_mask=args.data_mask, \
+            lagrangian_grid_masks=args.lagrangian_grid_masks, \
+            lagrangian_mask_spacing=args.lagrangian_mask_spacing, \
             mask_zero_scale=args.mask_zero_scale, \
             and_mask_files=args.and_mask_files,\
             or_mask_files=args.or_mask_files,\
@@ -999,9 +1273,11 @@ def main(argv=None):
             extra_error=args.extra_error, \
             E_slope_bias=args.E_slope_bias, \
             water_mask_threshold=args.water_mask_threshold, \
+            erode_source_mask = args.erode_source_mask,\
             year_mask_dir=args.year_mask_dir, \
             tide_directory=args.tide_directory, \
             tide_mask_file=args.tide_mask_file, \
+            tide_mask_shelf_val = args.tide_mask_shelf_val, \
             tide_model=args.tide_model, \
             tide_adjustment_file=args.tide_adjustment_file, \
             tide_mask_keep_val=args.tide_mask_keep_val,\
@@ -1013,6 +1289,10 @@ def main(argv=None):
             DEM_sigma_corr=args.DEM_sigma_corr,\
             DEM_grid_bias_params=args.DEM_bias_params,\
             DEM_slope_bias_scale=args.DEM_slope_bias_scale,\
+            solver='spqr' if args.sparseqr else 'cholmod',\
+            cholmod_scale_columns=args.cholmod_scale_columns,\
+            cholmod_cache_ordering=args.cholmod_cache_ordering,\
+            fine_grid_args=args.fine_grid_args,\
             THREADS=args.THREADS)
 
     if S is None:
@@ -1024,6 +1304,8 @@ def main(argv=None):
                              dzdt_lags=S['dzdt_lags'], \
                              reference_epoch=args.reference_epoch,
                              args=args)
+        else:
+            write_no_fit_file(no_fit_file, "smooth_fit found no valid data")
     else:
         if 'sigma_z0' not in S['E']:
             print("fit_altimetry.py: no sigma_z0 calculated, returning")
@@ -1031,8 +1313,15 @@ def main(argv=None):
 
         S['E']['sigma_z0']=interp_ds(S['E']['sigma_z0'], args.error_res_scale[0])
         for field in S['E'].keys():
+            if '_fine' in field:
+                # the error run used coarser fine grids: interpolate onto the fit's fine grids
+                S['E'][field] = fine_errors_to_fit_grid(S['E'][field], field, args.out_name)
+                continue
             if 'sigma_dz' in field: # ['sigma_dz', 'sigma_dzdt_lag1', 'sigma_dzdt_lag2', 'sigma_dzdt_lag4']:
                 S['E'][field] = interp_ds( S['E'][field], args.error_res_scale[1] )
+            elif field == 'sigma_lagrangian_dz':
+                S['E'][field] = interp_ds( S['E'][field], args.error_res_scale[2] )
+
         save_errors_to_file(S, args.out_name)
 
     print("done with " + args.out_name)

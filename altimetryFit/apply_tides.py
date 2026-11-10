@@ -6,12 +6,18 @@ Created on Wed Aug 14 14:19:34 2024
 @author: mostly Tyler Sutterley, developed for ATL1415
 """
 
+import contextlib
 import pointCollection as pc
 import numpy as np
 import pyTMD
+try:
+    import dask
+except ImportError:
+    dask = None
 
 def apply_tides(D, xy0, W,
                 tide_mask_file=None,
+                tide_mask_shelf_val=1,
                 tide_mask_data=None,
                 tide_directory=None,
                 tide_model=None,
@@ -20,8 +26,10 @@ def apply_tides(D, xy0, W,
                 tide_adjustment_format='h5',
                 extrapolate=True,
                 cutoff=200,
-                EPSG=None,
-                verbose=False):
+                chunks='auto',
+                crs = None,
+                threads = None,
+                verbose = False):
 
     '''
     read in the tide mask, calculate ocean tide elevations, and
@@ -43,6 +51,11 @@ def apply_tides(D, xy0, W,
         tide_adjustment_format: file format of the scaling factor grid
         extrapolate: extrapolate outside tide model bounds with nearest-neighbors
         cutoff: extrapolation cutoff in kilometers
+        chunks: kwarg passed to pyTMD
+        crs : crs used by D.  proj4 format works
+        threads: number of dask threads for pyTMD's chunked calculation
+            (default: dask's default, one per core)
+        verbose: control output verbosity
 
     output:
         D: data structure corrected for ocean tides and dac
@@ -53,12 +66,13 @@ def apply_tides(D, xy0, W,
         try:
             tide_mask = pc.grid.data().from_geotif(tide_mask_file,
                         bounds=[np.array([-0.6, 0.6])*W+xy0[0], np.array([-0.6, 0.6])*W+xy0[1]])
+            tide_mask.z = np.nan_to_num(tide_mask.z)
         except IndexError:
             return None
         if tide_mask.shape is None:
             return
     # find ice shelf points
-    is_els=tide_mask.interp(D.x, D.y) > 0.5
+    is_els = np.abs(tide_mask.interp(D.x, D.y) - tide_mask_shelf_val) < 0.5
     # need to assign the 'floating' field in case the SMB routines need it
     D.assign(floating=is_els)
     if verbose:
@@ -68,13 +82,30 @@ def apply_tides(D, xy0, W,
     # extrapolate tide estimate beyond model bounds
     # extrapolation cutoff is in kilometers
     if np.any(is_els.ravel()):
-
-        D.assign(tide_ocean = pyTMD.compute_tide_corrections(\
-                D.x, D.y, (D.time-2000)*24*3600*365.25,
-                DIRECTORY=tide_directory, MODEL=tide_model,
-                EPOCH=(2000,1,1,0,0,0), TYPE='drift', TIME='UTC',
-                crop=True,
-                EPSG=EPSG, EXTRAPOLATE=extrapolate, CUTOFF=cutoff))
+        if np.any(is_els.ravel()):
+            # cap the thread pool dask uses for pyTMD's chunked calculation
+            if threads is not None and dask is not None:
+                dask_config = dask.config.set(num_workers=threads)
+            else:
+                dask_config = contextlib.nullcontext()
+            with dask_config:
+                # D.time is years after Y2K + 2000 (see read_ICESat2), so the
+                # epoch must be 2000: an epoch of 2018 puts the tides 12 h late
+                D.tide_ocean = np.array(
+                    pyTMD.compute.tide_elevations(
+                    D.x, D.y, (D.time-2000)*24*3600*365.25,
+                    directory=tide_directory,
+                    model=tide_model,
+                    infer_minor=True,
+                    chunks=chunks,
+                    crs=crs,
+                    type="drift",
+                    epoch=(2000, 1, 1, 0, 0, 0),
+                    standard="GPS",
+                    method="linear",
+                    extrapolate=extrapolate,
+                    cutoff=cutoff,
+                ))
 
     # use a flexure mask to adjust estimated tidal values
     if np.any(is_els.ravel()) and tide_adjustment:

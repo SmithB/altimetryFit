@@ -45,6 +45,8 @@ class surfaceModel(pc.grid.data):
     def _read_vel_interpolators(self, velocity_files=None, velocity_type=None):
         if velocity_files is None:
             velocity_files=self.velocity_files
+        if isinstance(velocity_files,str):
+            velocity_files=[velocity_files]
         if velocity_type is None:
             velocity_type=self.velocity_type
         if 'xy01_grids' in velocity_files[0] or velocity_type=='xy01_grids':
@@ -56,7 +58,8 @@ class surfaceModel(pc.grid.data):
         else:
             interpolator_save_files=[os.path.splitext(velocity_files[0])[0] +'_xy01_grids.h5']
         if os.path.isfile(interpolator_save_files[0]):
-            self._xy0_interpolator=pc.grid.mosaic().from_list(interpolator_save_files, bounds=self.bounds(), group='xy0')
+            self._xy0_interpolator=pc.grid.mosaic().from_list(interpolator_save_files,
+                bounds=self._pad_bounds(self.bounds(), interpolator_save_files[0], 'xy0'), group='xy0')
             with h5py.File(interpolator_save_files[0],'r') as h5f:
                 try:
                     self._xy0_interpolator.t += np.array( h5f['xy0'].attrs['lagrangian_epoch'])
@@ -77,16 +80,48 @@ class surfaceModel(pc.grid.data):
         self.x, self.y  = [np.arange(bb[0], bb[-1]+0.1*self.spacing, self.spacing)
                            for bb in bds]
     def _get_shifted_xy(self, assign=False):
-        if np.isscalar(self.t):
-            t=[self.t]
+        # x0 and y0 have the shape of z: (ny, nx) for a scalar t, (ny, nx, nt) otherwise
+        squeeze = np.isscalar(self.t)
+        t=self.t
+        if squeeze:
+            t=np.array([t])
         if self._xy0_interpolator is None:
             self._read_vel_interpolators()
         x0 = self._xy0_interpolator.interp(self.x, self.y, t, gridded=True, field='x0')
         y0 = self._xy0_interpolator.interp(self.x, self.y, t, gridded=True, field='y0')
+        if squeeze:
+            x0, y0 = x0[:,:,0], y0[:,:,0]
         if assign:
             self.assign(x0=x0, y0=y0)
         else:
             return x0, y0
+
+    def _shifted_bounds(self, bounds):
+        """
+        Expand bounds to include the shifted points x0, y0
+
+        Lagrangian grids (z0 and dz with shelf=True, and lagrangian_dz) are
+        interpolated at x0, y0, which lie upstream or downstream of x, y.
+        Bounds are returned unchanged if x0, y0 cannot be calculated.
+        """
+        if bounds is None or self.bounds() is None or self.t is None or self.velocity_files is None:
+            return bounds
+        return [[np.nanmin([bb[0], np.nanmin(xy0)]), np.nanmax([bb[1], np.nanmax(xy0)])]
+                for bb, xy0 in zip(bounds, self._get_shifted_xy())]
+
+    def _pad_bounds(self, bounds, filename, group):
+        """
+        Pad bounds by the grid spacing of a group in an h5 file
+
+        A grid read with bounds keeps only the nodes inside them, so points
+        between the last node and the edge of the bounds would interpolate to NaN.
+        """
+        if bounds is None:
+            return None
+        with h5py.File(filename,'r') as h5f:
+            x = h5f[group]['x']
+            spacing = np.abs(x[1]-x[0])
+        return [[bb[0]-spacing, bb[1]+spacing] for bb in bounds]
 
     def from_tile(self, filename, bounds=None, match_extent=False):
 
@@ -96,11 +131,20 @@ class surfaceModel(pc.grid.data):
         if bounds is None:
             bounds=self.bounds()
 
-        for group in ['z0','dz','lagrangian_dz']:
-            try:
-                setattr(self, '_'+group, pc.grid.data().from_h5(filename, group=group, bounds=bounds))
-            except Exception:
-                pass
+        # only fits with a lagrangian_dz grid (--lagrangian_dz_spacing) have this group
+        with h5py.File(filename,'r') as h5f:
+            has_lagrangian_dz = 'lagrangian_dz' in h5f
+        shifted_bounds = bounds
+        if self.shelf or has_lagrangian_dz:
+            shifted_bounds = self._shifted_bounds(bounds)
+
+        for group in ['z0','dz']:
+            these_bounds = shifted_bounds if self.shelf else bounds
+            setattr(self, '_'+group, pc.grid.data().from_h5(filename, group=group,
+                bounds=self._pad_bounds(these_bounds, filename, group)))
+        if has_lagrangian_dz:
+            self._lagrangian_dz=pc.grid.data().from_h5(filename, group='lagrangian_dz',
+                bounds=self._pad_bounds(shifted_bounds, filename, 'lagrangian_dz'))
         return self
 
     def from_h5_directory(self, directory, bounds=None, match_extent=False, VERBOSE=False):
@@ -123,6 +167,12 @@ class surfaceModel(pc.grid.data):
         if bounds is None:
             bounds=self.bounds()
 
+        has_lagrangian_dz = any(os.path.isfile(os.path.join(directory, name))
+                                for name in ['lagrangian_dz.h5', 'lag_dz.h5'])
+        shifted_bounds = bounds
+        if self.shelf or has_lagrangian_dz:
+            shifted_bounds = self._shifted_bounds(bounds)
+
         for group in ['z0','dz','lagrangian_dz']:
             try:
                 this_file = os.path.join(directory, group+'.h5')
@@ -133,7 +183,9 @@ class surfaceModel(pc.grid.data):
                             continue
                     else:
                         continue
-                temp = pc.grid.data().from_h5(this_file, group=group, bounds=bounds)
+                these_bounds = shifted_bounds if (self.shelf or group=='lagrangian_dz') else bounds
+                temp = pc.grid.data().from_h5(this_file, group=group,
+                                              bounds=self._pad_bounds(these_bounds, this_file, group))
                 if 'cell_area' in temp.fields:
                     mask=(temp.cell_area > 0.001*(temp.x[1]-temp.x[0])*(temp.y[1]-temp.y[0])).astype(float)
                     mask[mask==0] = np.nan
@@ -212,7 +264,8 @@ class surfaceModel(pc.grid.data):
         self.assign(z=self.z0+self.dz)
         self.__update_size_and_shape__()
         self.__update_extent__()
-        if include_lagrangian:
+        # a model without a lagrangian_dz grid has no Lagrangian contribution
+        if include_lagrangian and self._lagrangian_dz is not None:
             self.get_lagrangian_dz()
             self.z += self.lagrangian_dz
         return self
@@ -228,11 +281,12 @@ class surfaceModel(pc.grid.data):
         """
         squeeze = np.isscalar(self.t)
         if self.shelf:
+            # x0 and y0 already have a time axis if t does
             self.assign(z0=self._z0.interp(self.x0, self.y0, field='z0'))
         else:
             self.assign(z0 = self._z0.interp(self.x, self.y, field='z0',  gridded=True))
-        if not squeeze:
-            self.z0=self.z0[:,:,None]
+            if not squeeze:
+                self.z0=self.z0[:,:,None]
 
 
     def get_dz(self):
@@ -326,14 +380,17 @@ class surfaceModel(pc.grid.data):
         squeeze = np.isscalar(self.t)
         if squeeze:
             t=[self.t]
+        else:
+            t=self.t
         temp=pc.grid.data().from_file(self.SMB_file, meta_only=True)
         t0 = temp.t[0]
         dt = temp.t[1]-temp.t[0]
-        t_range =[t[0]-2*dt, t[-1]+2*dt]
+        t_range =[np.min(t)-2*dt, np.max(t)+2*dt]
 
         FAC=pc.grid.data().from_file(self.SMB_file, bounds=self.bounds(pad=5.e4), t_range=t_range, fields=['FAC'])
         if calc_FAC_anomaly:
-            FAC0 =pc.grid.data().from_file(self.SMB_file, bounds=self.bounds(pad=5.e4), t_range=[t0-dt, t0+dt], fields=['FAC'])
+            # read only the first time step: a t_range of [t0-dt, t0+dt] read two
+            FAC0 =pc.grid.data().from_file(self.SMB_file, bounds=self.bounds(pad=5.e4), t_range=[t0, t0], fields=['FAC'])
             FAC.FAC -= FAC0.FAC
         FAC.FAC=pc.grid.fill_edges(FAC.FAC)
         FAC_i = FAC.interp(self.x, self.y, t, field='FAC', gridded=True)

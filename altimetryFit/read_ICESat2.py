@@ -7,6 +7,7 @@ Created on Tue Aug 20 15:00:05 2019
 """
 import numpy as np
 from .check_ATL06_hold_list import read_ATL06_hold_files as read_hold_files
+from .decimation_mask import in_no_decimation_mask
 #from PointDatabase.geo_index import geo_index
 #from PointDatabase.point_data import point_data
 #from PointDatabase.ATL06_filters import segDifferenceFilter
@@ -21,12 +22,17 @@ def select_gIs_by_cycle(gI_files, time_range):
     calendar_file = os.path.join(str(resources.files('altimetryFit')), 'package_data', 'IS2_calendar.json')
     with open(calendar_file,'r') as fh:
         is2c = json.load(fh)
-    cycle_start = [datetime.datetime(*jj) for jj in is2c.values()]
+    # start dates of cycles 1, 2, ... N
+    cycle_start = np.array([datetime.datetime(*jj) for jj in is2c.values()])
     date_range = [datetime.datetime(2018, 1, 1) + datetime.timedelta(days = (jj-2018)*365.25) for jj in time_range]
-    # first and last cycles, inclusive (argmin here gives the first zero value, returns zero if all zero):
-    cycles = [np.argmin(np.array(cycle_start)<jj) for jj in date_range]
-
-    cycle_re = re.compile('cycle_(\d+)')
+    # first and last cycles, inclusive: a date is in the cycle whose number is the
+    # count of cycle starts on or before it (0 before cycle 1).  The calendar can
+    # end before the data do: a date after its last start is in cycle N or later,
+    # so a time range that ends after that start includes every later cycle.
+    cycles = [int(np.sum(cycle_start <= jj)) for jj in date_range]
+    if cycle_start[-1] <= date_range[1]:
+        cycles[1] = np.inf
+    cycle_re = re.compile(r'cycle_(\d+)')
     for gI_file in gI_files.copy():
         try:
             this_cycle = int(cycle_re.search(gI_file).group(1))
@@ -65,7 +71,8 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
                  apply_hold_list=False,
                  seg_diff_tol=2, blockmedian_scale=None, cplx_accept_threshold=0.,
                  DEM_slope_bias_scale=None,
-                 t_range=None, target_area=None, N_target=None):
+                 t_range=None, target_area=None, N_target=None,
+                 no_decimation_mask=None):
     field_dict={None:['delta_time','h_li','h_li_sigma','latitude','longitude','atl06_quality_summary','segment_id','sigma_geo_h'],
                 'fit_statistics':['dh_fit_dx', 'dh_fit_dy', 'n_fit_photons','w_surface_window_final','snr_significance'],
                 'geophysical':['tide_ocean'],
@@ -92,7 +99,18 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
 
     for gI_file in gI_files:
         try:
-            D0 += pc.geoIndex().from_file(gI_file).query_xy((px.ravel(), py.ravel()), fields=fields)
+            if gI_file.endswith('.h5'):
+                D0 += pc.geoIndex().from_file(gI_file).query_xy((px.ravel(), py.ravel()), fields=fields)
+            elif gI_file.endswith('.json'):
+                tile_files = pc.tilingSchema().from_file(gI_file).filenames_for_box([bds['x'],bds['y']])
+                for tile_file in tile_files:
+                    #try:
+                    if True:
+                        D0 += [pc.indexedH5.data()\
+                               .from_h5(tile_file)\
+                                   .read([px.ravel(), py.ravel()], fields=fields)]
+                    #except Exception:
+                    #    pass
         except TypeError:
             print(f"read_ICESat-2: no data from {gI_file}")
 
@@ -113,7 +131,7 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
 
     # remove points outside the requested region
     D0.index((D0.x>xy0[0]-W['x']/2) & (D0.x<xy0[0]+W['x']/2) &
-             (D0.y>xy0[1]-W['x']/2) & (D0.y<xy0[1]+W['x']/2))
+             (D0.y>xy0[1]-W['y']/2) & (D0.y<xy0[1]+W['y']/2))
 
 
     if remove_overlap:
@@ -163,7 +181,7 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
 
         D.assign({'quality':D.atl06_quality_summary})
 
-        cplx_data=np.in1d(1.e4*np.round((D.x+1j*D.y)/1.e4), cplx_bins)
+        cplx_data=np.isin(1.e4*np.round((D.x+1j*D.y)/1.e4), cplx_bins)
         if np.any(cplx_data):
             D.quality[cplx_data] = (D.snr_significance[cplx_data] > 0.02) | \
                 (D.n_fit_photons[cplx_data]/D.w_surface_window_final[cplx_data] < 5)
@@ -174,15 +192,26 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
         #D.index(np.isfinite(D.z))
         if blockmedian_scale is not None:
             if blockmedian_scale is not None:
+                # segments inside the no-decimation mask (if any) are all kept,
+                # and are left out of the blockmedian
+                if no_decimation_mask is not None and 'x' not in D.fields:
+                    D.get_xy(SRS_proj4)
+                inside = in_no_decimation_mask(no_decimation_mask, D.x, D.y, D.time) & np.isfinite(D.z)
+                z_bm = D.z.copy()
+                z_bm[inside] = np.nan
                 # blockmedian by the mean of strong and weak beams
                 bm_ind = pc.pt_blockmedian(D.x_atc, np.zeros_like(D.z),
-                                        D.z, blockmedian_scale, return_index=True)[3]
-                if len(bm_ind)==0:
+                                        z_bm, blockmedian_scale, return_index=True)[3]
+                i_inside = np.flatnonzero(inside.ravel())
+                if len(bm_ind)==0 and len(i_inside)==0:
                     continue
                 for field in D.fields:
                     temp=getattr(D, field).ravel()
-                    temp=np.concatenate([temp[bm_ind[:,0],None], temp[bm_ind[:,1],None]], axis=1)
-                    setattr(D, field, np.squeeze(np.nanmean(temp, axis=1)))
+                    if len(bm_ind) > 0:
+                        bm_vals=np.nanmean(np.concatenate([temp[bm_ind[:,0],None], temp[bm_ind[:,1],None]], axis=1), axis=1)
+                    else:
+                        bm_vals=np.zeros(0, dtype=temp.dtype)
+                    setattr(D, field, np.concatenate([bm_vals, temp[i_inside]]))
 
         if 'x' not in D.fields:
             D.get_xy(SRS_proj4)

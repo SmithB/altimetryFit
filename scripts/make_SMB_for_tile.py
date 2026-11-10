@@ -88,7 +88,7 @@ def main():
         return os.path.abspath(os.path.expanduser(p))
 
     import argparse
-    parser=argparse.ArgumentParser(description='Find the best offset for a DEM relative to a set of altimetry data', fromfile_prefix_chars="@")
+    parser=argparse.ArgumentParser(description='Calculate the surface height for a firn-corrected tile', fromfile_prefix_chars="@")
     parser.add_argument('--file', type=str, required=False)
     parser.add_argument("--time", '-t', type=str)
     parser.add_argument('--reference_epoch', type=int)

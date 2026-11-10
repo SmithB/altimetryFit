@@ -11,7 +11,8 @@ import re
 import pointCollection as pc
 import scipy.ndimage
 
-# provides mask_data_by_year, update_mask_data_andor, setup_gzone_relax
+# provides mask_data_by_year, update_mask_data_andor, setup_gzone_relax,
+#   apply_tide_mask_keep, make_default_mask, read_named_masks, mask_is_empty
 
 def mask_data_by_year(data, mask_dir):
     masks={}
@@ -111,3 +112,82 @@ def apply_tide_mask_keep(tide_mask_keep_val,
         mask_data.z *= np.tile(\
             (this_tide_mask.interp(mask_data.x, mask_data.y, gridded=True) > 0.1)[:,:,None],
                                [1, 1, mask_data.shape[2]])
+
+def make_default_mask(bounds, mask_file=None, spacing=None,
+                      tide_mask_keep_val=None, tide_mask_keep_buffer=None,
+                      tide_mask_file=None, and_mask_files=None, or_mask_files=None):
+    '''
+    Build the default mask (the mask named 'default' in fit_altimetry)
+
+    The mask is read from mask_file (or is all ones, at the specified spacing),
+    restricted to the tide-mask 'keep' value, and combined with the and/or masks.
+
+    Parameters
+    ----------
+    bounds : list
+        [[xmin, xmax], [ymin, ymax]] extent of the mask
+    mask_file : str, optional
+        mask file (1 inside the mask).  The default is None.
+    spacing : float, optional
+        spacing of the all-ones mask used if mask_file is None.  The default is None.
+    tide_mask_keep_val, tide_mask_keep_buffer, tide_mask_file : optional
+        see apply_tide_mask_keep
+    and_mask_files, or_mask_files : list of str, optional
+        see update_mask_data_andor
+
+    Returns
+    -------
+    mask_data : pointCollection.grid.data
+        the mask
+    '''
+    if mask_file is not None:
+        mask_data=pc.grid.data().from_file(mask_file,bounds=bounds)
+    else:
+        mask_data=pc.grid.data().from_dict({'x':np.arange(bounds[0][0], bounds[0][1]+.1, spacing),
+                                            'y':np.arange(bounds[1][0], bounds[1][1]+.1, spacing)})
+        mask_data.assign(z=np.ones((len(mask_data.y), len(mask_data.x))))
+
+    apply_tide_mask_keep(tide_mask_keep_val,
+                         buffer_W=tide_mask_keep_buffer,
+                         mask_data=mask_data,
+                         tide_mask_file=tide_mask_file)
+
+    if and_mask_files is not None or or_mask_files is not None:
+        update_mask_data_andor(mask_data, and_mask_files, or_mask_files)
+    return mask_data
+
+def read_named_masks(masks, bounds):
+    '''
+    Read a dictionary of named masks
+
+    Parameters
+    ----------
+    masks : dict
+        maps mask names to mask files (geotif or h5, with fields x, y, [t,] z),
+        which are read over bounds, or to pointCollection.grid.data objects,
+        which are used as they are.
+    bounds : list
+        [[xmin, xmax], [ymin, ymax]] extent to read
+
+    Returns
+    -------
+    dict
+        maps mask names to pointCollection.grid.data objects.  A mask file that
+        does not overlap bounds gives an all-zero mask.
+    '''
+    out={}
+    for name, mask in masks.items():
+        if isinstance(mask, str):
+            mask = pc.grid.data().from_file(mask, bounds=bounds)
+        if mask is None or getattr(mask, 'z', None) is None or np.size(mask.z)==0:
+            mask = pc.grid.data().from_dict({'x':np.array(bounds[0], dtype=float),
+                                             'y':np.array(bounds[1], dtype=float),
+                                             'z':np.zeros((2,2))})
+        out[name]=mask
+    return out
+
+def mask_is_empty(mask_data):
+    '''
+    Return True if no part of a mask is greater than 0.5
+    '''
+    return not np.any(np.nan_to_num(mask_data.z) > 0.5)
