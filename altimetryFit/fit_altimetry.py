@@ -1202,6 +1202,15 @@ def main(argv=None):
     if isinstance(args, int):
         return args
 
+    if args.tide_model is not None:
+        # apply_tides imports pyTMD only when it reaches ice-shelf data, so
+        # check for it here, before any data are read
+        try:
+            import pyTMD  # noqa: F401
+        except ImportError as e:
+            raise ImportError(f'--tide_model {args.tide_model} needs pyTMD, '
+                              f'which could not be imported: {e}') from e
+
     no_fit_file=None
     if args.calc_error_file is None and not args.calc_error:
         no_fit_file=no_fit_file_name(args.out_name)
