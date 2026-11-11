@@ -51,7 +51,7 @@ from altimetryFit.read_optical import read_optical_data, laser_key
 from altimetryFit.decimation_mask import read_no_decimation_mask, in_no_decimation_mask
 from altimetryFit.read_DEM_data import regen_DEM_meta
 from altimetryFit.read_CS2_data import read_CS2_data, radar_key
-from altimetryFit.apply_tides import apply_tides
+from altimetryFit.apply_tides import apply_tides, check_tide_model
 from altimetryFit.mask_functions import mask_data_by_year, setup_gzone_relax, \
     make_default_mask, read_named_masks, mask_is_empty
 
@@ -427,6 +427,13 @@ def fit_altimetry(xy0=None, Width=4e4, \
         calc_error=True
         max_iterations=0
         repeat_res=None
+
+    # tides are applied only to newly read data (not to data passed in or
+    # reread from fits), and only with a tide mask: check that they can be
+    # calculated before reading any data
+    if tide_mask_file is not None and data is None and reread_file is None \
+            and reread_dirs is None:
+        check_tide_model(tide_model, tide_directory)
 
     pad=np.array([-1.e4, 1.e4])
     # the default mask
@@ -1202,14 +1209,9 @@ def main(argv=None):
     if isinstance(args, int):
         return args
 
-    if args.tide_model is not None:
-        # apply_tides imports pyTMD only when it reaches ice-shelf data, so
-        # check for it here, before any data are read
-        try:
-            import pyTMD  # noqa: F401
-        except ImportError as e:
-            raise ImportError(f'--tide_model {args.tide_model} needs pyTMD, '
-                              f'which could not be imported: {e}') from e
+    if args.tide_model is not None and args.tide_mask_file is None:
+        print('fit_altimetry.py: --tide_model is set but --tide_mask_file is '
+              'not, so no tides will be applied', file=sys.stderr)
 
     no_fit_file=None
     if args.calc_error_file is None and not args.calc_error:

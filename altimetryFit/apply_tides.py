@@ -14,6 +14,36 @@ try:
 except ImportError:
     dask = None
 
+
+def check_tide_model(tide_model, tide_directory=None):
+    '''
+    check that the tides can be calculated, before any data are read
+
+    apply_tides imports pyTMD and reads the tide model only when it reaches
+    ice-shelf data.  This makes the same model lookup as
+    pyTMD.compute.tide_elevations, so a missing pyTMD, a model name pyTMD
+    doesn't know, or model files missing from tide_directory (e.g. an
+    unmounted disk) raise an error at the start of a fit.
+
+    inputs:
+        tide_model: tide model name (e.g. 'CATS2008')
+        tide_directory: directory holding the tide models
+    '''
+    if tide_model is None:
+        raise ValueError('a tide mask file is set, but no tide model is')
+    try:
+        import pyTMD
+    except ImportError as e:
+        raise ImportError(f'tide model {tide_model} needs pyTMD, which could '
+                          f'not be imported: {e}') from e
+    try:
+        pyTMD.io.model(tide_directory).from_database(tide_model)
+    except ValueError as e:
+        raise ValueError(f'tide model {tide_model}: {e}') from e
+    except FileNotFoundError as e:
+        raise FileNotFoundError(f'tide model {tide_model} is missing a file '
+                                f'in {tide_directory}: {e}') from e
+
 def apply_tides(D, xy0, W,
                 tide_mask_file=None,
                 tide_mask_shelf_val=1,
