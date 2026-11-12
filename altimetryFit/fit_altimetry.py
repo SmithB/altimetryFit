@@ -18,7 +18,8 @@ from altimetryFit.lagrangian_functions import setup_lagrangian, \
     advect_mask, \
     update_output_data_for_lagrangian,\
     setup_lagrangian_fit,\
-    parse_lagrangian_fit
+    parse_lagrangian_fit,\
+    advection_grid_epoch
 import json
 import glob
 import h5py
@@ -957,9 +958,9 @@ def parse_inputs(argv):
     parser.add_argument('--firn_fixed', action='store_true')
     parser.add_argument('--full_FAC_correction', action='store_true', help='if specified, subtract the full FAC from the data, rather than the anomaly.')
     parser.add_argument('--lagrangian', action='store_true')
-    parser.add_argument('--velocity_files', type=path, nargs='+', help='lagrangian velocity files.  May contain multiple time values.')
-    parser.add_argument('--velocity_type', type=str, help='velocity file type.  Specify xy01_grids if interpolators are used')
-    parser.add_argument('--lagrangian_epoch', type=float, help='time (decimal year) to which data will be advected')
+    parser.add_argument('--velocity_files', type=path, nargs='+', help='lagrangian velocity files: advectionGrid (xy01_grids) files, or glob patterns for them (e.g. a directory of tiles, quoted so the shell does not expand it).  May contain multiple time values.')
+    parser.add_argument('--velocity_type', type=str, help='velocity file type.  Specify advectionGrid (or xy01_grids) if the velocity files are advectionGrid (interpolator) files whose names do not contain advectionGrid or xy01_grids')
+    parser.add_argument('--lagrangian_epoch', type=float, help='time (decimal year) to which data will be advected.  It must match the epoch (time_0) of the advectionGrid files; the default is time_0')
     parser.add_argument('--lagrangian_mask_files', type=str, nargs='+', help='filenames for geotifs containing areas that have calved.  Filenames contain dates _YYYYMMDD_')
     parser.add_argument('--lagrangian_ref_dem', type=path, help='dem to be subtracted from data before advection')
     parser.add_argument('--lagrangian_dz_spacing', type=float, help='field to estimate moving topography, ignores lagrangian argument')
@@ -1173,7 +1174,8 @@ def parse_inputs(argv):
     args.lagrangian_dict=None
     if args.lagrangian:
         if args.lagrangian_epoch is None:
-            args.lagrangian_epoch = np.arange(args.time_span[0], args.time_span[1], args.spacing['dt'])[args.reference_epoch]
+            # the advectionGrid files advect data to and from their epoch (time_0)
+            args.lagrangian_epoch = advection_grid_epoch(args.velocity_files, args.velocity_type)
         args.lagrangian_dict = {field:getattr(args, field) for field in \
                            ['velocity_files', 'velocity_type', 'lagrangian_epoch', 'lagrangian_ref_dem',
                             'lagrangian_dz_spacing', 'lagrangian_dz_E_RMS',

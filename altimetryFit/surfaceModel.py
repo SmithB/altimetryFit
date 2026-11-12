@@ -7,6 +7,7 @@ Created on Thu May  1 11:54:08 2025
 """
 
 import pointCollection as pc
+import pointAdvection
 import numpy as np
 import os
 import h5py
@@ -24,7 +25,7 @@ class surfaceModel(pc.grid.data):
                  spacing=None,
                  velocity_type='xy01_grids'):
         super().__init__()
-        self._xy0_interpolator=None
+        self._advection_grid=None
         self._z0=None
         self._dz=None
         self._lagrangian_dz=None
@@ -57,14 +58,19 @@ class surfaceModel(pc.grid.data):
                     raise(FileNotFoundError(f"Interpolator save files {interpolator_save_files} not found"))
         else:
             interpolator_save_files=[os.path.splitext(velocity_files[0])[0] +'_xy01_grids.h5']
-        if os.path.isfile(interpolator_save_files[0]):
-            self._xy0_interpolator=pc.grid.mosaic().from_list(interpolator_save_files,
-                bounds=self._pad_bounds(self.bounds(), interpolator_save_files[0], 'xy0'), group='xy0')
-            with h5py.File(interpolator_save_files[0],'r') as h5f:
-                try:
-                    self._xy0_interpolator.t += np.array( h5f['xy0'].attrs['lagrangian_epoch'])
-                except:
-                    pass
+        if not os.path.isfile(interpolator_save_files[0]):
+            raise FileNotFoundError(f"Interpolator save file {interpolator_save_files[0]} not found")
+        # the xy0 and xy1 groups share a grid: pad the bounds by the spacing
+        # of whichever group the file has
+        with h5py.File(interpolator_save_files[0],'r') as h5f:
+            pad_group = next((group for group in ['xy0', 'xy1'] if group in h5f), None)
+        bounds = self.bounds()
+        if pad_group is not None:
+            bounds = self._pad_bounds(bounds, interpolator_save_files[0], pad_group)
+        # advectionGrid times are absolute (decimal years).  surfaceModel uses
+        # x0 and y0: advectionGrid.interp raises an error if they were not read
+        self._advection_grid=pointAdvection.advectionGrid().from_files(interpolator_save_files,
+            bounds=bounds)
 
     def _match_extent(self, filename):
         if filename.endswith('tif') or filename.endswith('tiff'):
@@ -85,10 +91,10 @@ class surfaceModel(pc.grid.data):
         t=self.t
         if squeeze:
             t=np.array([t])
-        if self._xy0_interpolator is None:
+        if self._advection_grid is None:
             self._read_vel_interpolators()
-        x0 = self._xy0_interpolator.interp(self.x, self.y, t, gridded=True, field='x0')
-        y0 = self._xy0_interpolator.interp(self.x, self.y, t, gridded=True, field='y0')
+        x0 = self._advection_grid.interp(self.x, self.y, t, gridded=True, field='x0')
+        y0 = self._advection_grid.interp(self.x, self.y, t, gridded=True, field='y0')
         if squeeze:
             x0, y0 = x0[:,:,0], y0[:,:,0]
         if assign:

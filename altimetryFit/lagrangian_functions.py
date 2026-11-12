@@ -11,27 +11,22 @@ import pointCollection as pc
 from LSsurf import fd_grid
 import os
 import glob
-import h5py
 import pointAdvection
 import LSsurf
 
 
 def get_xy01_grids(interpolator_save_files, bounds):
+    """
+    Read the parcel-position grids from a list of interpolator (xy01_grids) files
 
-    SPY = 365.25*24*3600
-    xy0_obj = pc.grid.mosaic().from_list(
-        interpolator_save_files, bounds=bounds, group='xy0')
-    xy1_obj = pc.grid.mosaic().from_list(
-        interpolator_save_files, bounds=bounds, group='xy1')
-    xy0_obj.years_to_time = SPY
-    with h5py.File(interpolator_save_files[0], 'r') as h5f:
-        try:
-            if h5f['xy0']['t'].attrs['units'] == 'years':
-                xy0_obj.years_to_time = 1
-                xy1_obj.years_to_time = 1
-        except:
-            pass
-    return xy0_obj, xy1_obj
+    Returns
+    -------
+    pointAdvection.advectionGrid
+        grid with fields x0, y0 (position at the lagrangian epoch of the parcel
+        at x, y, t) and x1, y1 (position at t of the parcel at x, y at the
+        epoch), with absolute times in decimal years and the epoch in time_0
+    """
+    return pointAdvection.advectionGrid().from_files(interpolator_save_files, bounds=bounds)
 
 def setup_lagrangian_fit(data, grids, G_data, constraint_ops_list, args=None, **params):
 
@@ -94,14 +89,99 @@ def parse_lagrangian_fit(m0, G_data, grids, sigma=False):
             mask = grids['lagrangian_dz'].mask)
     return m
 
+# velocity types that mark velocity files as advectionGrid (interpolator) files.
+# Files whose names contain one of these are advectionGrid files whatever the velocity type.
+advection_grid_types = ('advectionGrid', 'xy01_grids')
+
+
+def advection_grid_files(velocity_files, velocity_type=None):
+    """
+    Find the advectionGrid (xy01_grids) files for a lagrangian fit
+
+    If velocity_type is 'advectionGrid' or 'xy01_grids', or if the name of the
+    first velocity file contains one of these, the velocity files are
+    advectionGrid files or glob patterns for them (e.g. a directory of tiles,
+    which are mosaicked when they are read).  Otherwise, the grids are read
+    from a file named like the first velocity file, with its extension
+    replaced by '_xy01_grids.h5'.
+
+    Returns
+    -------
+    list of str
+        advectionGrid files
+    """
+    if velocity_files is None or len(velocity_files) == 0:
+        raise ValueError('lagrangian fits need velocity files (--velocity_files)')
+    if velocity_type in advection_grid_types or \
+            any(name in velocity_files[0] for name in advection_grid_types):
+        files = []
+        for pattern in velocity_files:
+            matches = [pattern] if os.path.isfile(pattern) else sorted(glob.glob(pattern))
+            if len(matches) == 0:
+                raise FileNotFoundError(f'no advectionGrid files match {pattern}')
+            files += matches
+        return files
+    return [os.path.splitext(velocity_files[0])[0] + '_xy01_grids.h5']
+
+
+def advection_grid_epoch(velocity_files, velocity_type=None):
+    """
+    The epoch (time_0) of the advectionGrid files for a lagrangian fit, in decimal years
+
+    The files advect points to and from this epoch, so it is the lagrangian epoch
+    of the fit.  See advection_grid_files for the arguments.
+    """
+    files = advection_grid_files(velocity_files, velocity_type)
+    time_0, units = pointAdvection.advectionGrid.read_time_0(files)
+    if units != 'years':
+        raise ValueError(f'the times in {files[0]} are in {units}: lagrangian fits need advectionGrid '
+                         'files with times in years (decimal years)')
+    return time_0
+
+
 def setup_lagrangian(velocity_files=None, velocity_type = None, lagrangian_epoch=None, reference_epoch=None,
     SRS_proj4=None, xy0=None, Wxy=None, t_span=None, spacing=None, verbose=False,
     **kwargs):
+    """
+    Read the advectionGrid for a lagrangian fit, and find the bounds of the
+    area that the fit's parcels cover during the fit
+
+    The advectionGrid files are found by advection_grid_files.  The data are
+    advected to and from the epoch (time_0) of the files: lagrangian_epoch
+    must match it, and if lagrangian_epoch is None, time_0 is used.
+    reference_epoch is not used.
+    """
+    interpolator_save_files = advection_grid_files(velocity_files, velocity_type)
+
+    bounds=[xyi + np.array([-0.5, 0.5])*Wxy for xyi in xy0]
+    # create arrays of grid coordinates
+    x = fd_grid([bounds[0]], [spacing['dz']], name='x').ctrs[0]
+    y = fd_grid([bounds[1]], [spacing['dz']], name='y').ctrs[0]
+
+    # read a larger extent from the interpolator save files than we will need
+    bounds_pad = [xyi + np.array([-1, 1])*Wxy for xyi in xy0]
+    advection_grid = get_xy01_grids(interpolator_save_files, bounds_pad)
+    # the advectionGrid times are absolute: they must be in the same units as the data times
+    if advection_grid.units != 'years':
+        raise ValueError(f'the times in {interpolator_save_files[0]} are in {advection_grid.units}: '
+                         'lagrangian fits need advectionGrid files with times in years (decimal years)')
+    # the interpolators advect points to and from the epoch they were made for
+    if lagrangian_epoch is None:
+        lagrangian_epoch = advection_grid.time_0
+    elif not np.isclose(advection_grid.time_0, lagrangian_epoch, rtol=0, atol=1.e-6):
+        raise ValueError(f'lagrangian_epoch={lagrangian_epoch} does not match the epoch of the '
+                         f'interpolator files ({advection_grid.time_0}): {interpolator_save_files[0]}')
+    # data outside the times of the advectionGrid can't be advected (they are not used)
+    t_grid = [np.nanmin(advection_grid.time), np.nanmax(advection_grid.time)]
+    if np.min(t_span) < t_grid[0] - 1.e-6 or np.max(t_span) > t_grid[1] + 1.e-6:
+        print(f'setup_lagrangian: WARNING: the time span of the fit ({t_span[0]} to {t_span[1]}) is not '
+              f'inside the time range of the advectionGrid ({t_grid[0]} to {t_grid[1]}): '
+              'data outside the advectionGrid time range will not be used')
 
     # verbose output of lagrangian parameters
     if verbose:
-        print(f'Velocity File(s): {",".join(velocity_files)}')
-        print(f'Advect parcels to {lagrangian_epoch:0.1f}')
+        print(f'Velocity File(s): {",".join(interpolator_save_files)}')
+        print(f'Advect parcels to {lagrangian_epoch:0.2f}')
 
     # make the ouput arguments dictionary
     out_args=kwargs
@@ -110,32 +190,10 @@ def setup_lagrangian(velocity_files=None, velocity_type = None, lagrangian_epoch
             'SRS_proj4':SRS_proj4,
             'xy0':xy0,
             'Wxy':Wxy})
-    if lagrangian_epoch is None:
-        # calculate the lagrangian epoch based on the reference time
-        lagrangian_epoch = fd_grid([t_span], [spacing['dt']], name='t').ctrs[0][reference_epoch]
-        print(f"lagrangian epoch is {lagrangian_epoch}")
 
-    bounds=[xyi + np.array([-0.5, 0.5])*Wxy for xyi in xy0]
-    # create arrays of grid coordinates
-    x = fd_grid([bounds[0]], [spacing['dz']], name='x').ctrs[0]
-    y = fd_grid([bounds[1]], [spacing['dz']], name='y').ctrs[0]
-    if 'xy01_grids' in velocity_files[0] or velocity_type=='xy01_grids':
-        interpolator_save_files=velocity_files
-        if not os.path.isfile(interpolator_save_files[0]):
-            interpolator_save_files=glob.glob(interpolator_save_files[0])
-            if len(interpolator_save_files)==0:
-                raise(FileNotFoundError(f"Interpolator save files {interpolator_save_files} not found"))
-    else:
-        interpolator_save_files=[os.path.splitext(velocity_files[0])[0] +'_xy01_grids.h5']
-
-    # read a larger extent from the interpolator save files than we will need
-    bounds_pad = [xyi + np.array([-1, 1])*Wxy for xyi in xy0]
-    xy0_obj, xy1_obj = get_xy01_grids(interpolator_save_files, bounds_pad)
-
-    gridy, gridx, gridt = np.meshgrid(y, x,
-                                      (np.array(t_span)-lagrangian_epoch)*xy0_obj.years_to_time, indexing='ij')
-    x1=xy1_obj.interp(gridx.ravel(), gridy.ravel(), gridt.ravel(), field='x1')
-    y1=xy1_obj.interp(gridx.ravel(), gridy.ravel(), gridt.ravel(), field='y1')
+    gridy, gridx, gridt = np.meshgrid(y, x, np.array(t_span), indexing='ij')
+    x1=advection_grid.interp(gridx.ravel(), gridy.ravel(), gridt.ravel(), field='x1')
+    y1=advection_grid.interp(gridx.ravel(), gridy.ravel(), gridt.ravel(), field='y1')
     x1 = np.append(x1, bounds[0])
     y1 = np.append(y1, bounds[1])
     bounds_full=[[np.nanmin(x1), np.nanmax(x1)],[np.nanmin(y1), np.nanmax(y1)]]
@@ -145,32 +203,35 @@ def setup_lagrangian(velocity_files=None, velocity_type = None, lagrangian_epoch
             reread=True
             break
     if reread:
-        xy0_obj, xy1_obj = get_xy01_grids(interpolator_save_files, bounds_full)
+        # pad the bounds by two grid cells: the grid read for bounds_full has
+        # only the nodes inside it, so without the padding, data close to the
+        # edges of bounds_full could not be interpolated
+        dx = np.abs(advection_grid.x[1] - advection_grid.x[0])
+        advection_grid = get_xy01_grids(interpolator_save_files,
+                                        [np.array(bb) + np.array([-2, 2])*dx for bb in bounds_full])
 
-    out_args.update({'xy1_obj': xy1_obj,
-        'xy0_obj': xy0_obj,
+    out_args.update({'advection_grid': advection_grid,
         'bds':bounds_full})
     return out_args
 
 
 def apply_lagrangian_masks(data, x, y, mask_files=None, **kwargs):
     for mask_file in mask_files:
-        mask=pc.grid.data().from_geotif(mask_file, bounds=kwargs['xy0_obj'].bounds())
+        mask=pc.grid.data().from_geotif(mask_file, bounds=kwargs['advection_grid'].bounds())
         if mask is None or np.any(mask.shape==0):
             continue
         year_mask = pc.grid.DEM_year(mask_file)
-        t_mask=( year_mask - kwargs['lagrangian_epoch'])*kwargs['xy0_obj'].years_to_time
         # if we have moved the points, the location of the points at the time of the mask is
-        # found by interpolating into the xy1 object
-        xx = kwargs['xy1_obj'].interp(x, y, t_mask, field='x1')
-        yy = kwargs['xy1_obj'].interp(x, y, t_mask, field='y1')
+        # found by interpolating x1 and y1 (advection_grid times are absolute)
+        xx = kwargs['advection_grid'].interp(x, y, year_mask, field='x1')
+        yy = kwargs['advection_grid'].interp(x, y, year_mask, field='y1')
         mask_i = mask.interp(xx, yy)
         keep =  (~np.isfinite(mask_i)) | ( mask_i < 0.1 ) | (data.time < year_mask)
         data.index(keep)
 
 
 def advect_mask(mask_data, t_span=None, spacing=None, mask_spacing=None, max_substeps=10,
-                xy0=None, Wxy=None, lagrangian_epoch=None, xy0_obj=None, xy1_obj=None,
+                xy0=None, Wxy=None, lagrangian_epoch=None, advection_grid=None,
                 lagrangian_zero_velocity=False, verbose=False, **kwargs):
     '''
     Map an eulerian mask into the lagrangian frame of a full-lagrangian fit
@@ -197,7 +258,7 @@ def advect_mask(mask_data, t_span=None, spacing=None, mask_spacing=None, max_sub
         Between epochs, parcels are also sampled at substeps short enough that
         they move less than mask_spacing between samples, up to this many per
         epoch.  The substeps only affect mask_any.  The default is 10.
-    xy0, Wxy, lagrangian_epoch, xy0_obj, xy1_obj, lagrangian_zero_velocity :
+    xy0, Wxy, lagrangian_epoch, advection_grid, lagrangian_zero_velocity :
         lagrangian parameters, as returned by setup_lagrangian
     verbose : bool, optional
         if True, report the number of substeps.  The default is False.
@@ -228,8 +289,8 @@ def advect_mask(mask_data, t_span=None, spacing=None, mask_spacing=None, max_sub
         # positions of the parcels at time t
         if lagrangian_zero_velocity:
             return xg, yg
-        tt = np.zeros_like(xg) + (t - lagrangian_epoch)*xy0_obj.years_to_time
-        return xy1_obj.interp(xg, yg, tt, field='x1'), xy1_obj.interp(xg, yg, tt, field='y1')
+        tt = np.zeros_like(xg) + t
+        return advection_grid.interp(xg, yg, tt, field='x1'), advection_grid.interp(xg, yg, tt, field='y1')
 
     def inside(xx, yy, t):
         if mask_is_3d:
@@ -285,8 +346,6 @@ def update_data_for_lagrangian(data, lagrangian_ref_dem=None, mask_data=None, **
             bounds=data.bounds()).interp(data.x, data.y)
         data.index(np.isfinite(data.z))
 
-    t_lag = (data.time - kwargs['lagrangian_epoch'])*kwargs['xy0_obj'].years_to_time
-
     if kwargs['reread_data'] and 'x_lag' in data.fields:
         if 'move_points' in kwargs and kwargs['move_points']:
             # if we are using data that was read from a previous fit in full
@@ -302,8 +361,9 @@ def update_data_for_lagrangian(data, lagrangian_ref_dem=None, mask_data=None, **
         return out_args
 
     if not kwargs['lagrangian_zero_velocity']:
-        x0 = kwargs['xy0_obj'].interp(data.x, data.y, t_lag, field='x0')
-        y0 = kwargs['xy0_obj'].interp(data.x, data.y, t_lag, field='y0')
+        # advection_grid times are absolute
+        x0 = kwargs['advection_grid'].interp(data.x, data.y, data.time, field='x0')
+        y0 = kwargs['advection_grid'].interp(data.x, data.y, data.time, field='y0')
     else:
         x0=data.x.copy()
         y0=data.y.copy()
