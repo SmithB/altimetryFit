@@ -11,7 +11,6 @@ def remove_overlapping_DEM_data(Ds, bounds, res, dt_min=0.125):
 
     times=np.array([np.nanmedian(Di.time) for Di in Ds])
     D_of_t={tt:DD for  DD, tt in zip(Ds, times)}
-    dt_min=1/8
     DEM_masks = {}
     masking_changed=True
     xx=np.arange(bounds[0][0]-res, bounds[0][1]+res*1.1, res)
