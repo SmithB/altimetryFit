@@ -72,7 +72,18 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
                  seg_diff_tol=2, blockmedian_scale=None, cplx_accept_threshold=0.,
                  DEM_slope_bias_scale=None,
                  t_range=None, target_area=None, N_target=None,
-                 no_decimation_mask=None):
+                 no_decimation_mask=None, lagrangian_frame=None):
+    '''
+    Read ICESat-2 ATL06 data for a region, edit them, and decimate them along track
+
+    With N_target, the blockmedian scale is increased from blockmedian_scale
+    so that about N_target values are returned.  With a lagrangian_frame (in
+    a full-lagrangian fit; see altimetryFit.lagrangian_functions.lagrangianFrame),
+    only the segments that will be in the fit's tile are used, the scale is
+    set from the along-track length of their pairs (the blockmedian pools the
+    two beams of a pair), so that about N_target values are in the tile, and
+    the no-decimation mask is evaluated in lagrangian coordinates.
+    '''
     field_dict={None:['delta_time','h_li','h_li_sigma','latitude','longitude','atl06_quality_summary','segment_id','sigma_geo_h'],
                 'fit_statistics':['dh_fit_dx', 'dh_fit_dy', 'n_fit_photons','w_surface_window_final','snr_significance'],
                 'geophysical':['tide_ocean'],
@@ -140,7 +151,7 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
     if D0 is None or D0.size==0:
         return [None]
 
-    if N_target is not None:
+    if N_target is not None and lagrangian_frame is None:
         # approximate expected count based on blockmedian scale:
         N_tracks=pc.unique_by_rows(np.c_[D0.rgt, D0.cycle_number, D0.BP, D0.LR]).shape[0]
         L_track = N_tracks*W['x']
@@ -189,6 +200,24 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
 
         D.z[valid==0] = np.nan
         D.z[D.quality==1] = np.nan
+        if lagrangian_frame is not None:
+            # use only the segments that will be in the fit's tile (they are
+            # edited first, so the edits don't depend on the tile)
+            if 'x' not in D.fields:
+                D.get_xy(SRS_proj4)
+            D.z[~lagrangian_frame.select(D.x, D.y, D.time)] = np.nan
+
+    if N_target is not None and lagrangian_frame is not None:
+        # the blockmedian pools the two beams of each pair along track, so a
+        # pair gives one value for each blockmedian_scale of along-track
+        # distance with data: count the (20 m) segment positions with data
+        # in either beam
+        L_pairs = 20.*np.sum([np.sum(np.any(np.isfinite(D.z).reshape(D.z.shape[0], -1), axis=1))
+                              for D in D1 if 'z' in D.fields and D.z.size > 0])
+        blockmedian_scale = np.maximum(blockmedian_scale, L_pairs/N_target)
+        print(f'\t read_ICESat-2: IS2 blockmedian scale = {np.round(blockmedian_scale)} (lagrangian, {L_pairs/1000:.0f} km of pairs in the tile)')
+
+    for ind, D in enumerate(D1):
         #D.index(np.isfinite(D.z))
         if blockmedian_scale is not None:
             if blockmedian_scale is not None:
@@ -196,7 +225,8 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
                 # and are left out of the blockmedian
                 if no_decimation_mask is not None and 'x' not in D.fields:
                     D.get_xy(SRS_proj4)
-                inside = in_no_decimation_mask(no_decimation_mask, D.x, D.y, D.time) & np.isfinite(D.z)
+                inside = in_no_decimation_mask(no_decimation_mask, D.x, D.y, D.time,
+                                               frame=lagrangian_frame) & np.isfinite(D.z)
                 z_bm = D.z.copy()
                 z_bm[inside] = np.nan
                 # blockmedian by the mean of strong and weak beams

@@ -126,7 +126,19 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
                   time_range=None,
                   data_sigma_max=None,
                   include_xtrack=False, VERBOSE=True,
-                  no_decimation_mask=None):
+                  no_decimation_mask=None,
+                  lagrangian_frame=None):
+    '''
+    Read DEM data for a region, and decimate them
+
+    With N_target, the blockmedian scale is increased from blockmedian_scale
+    so that about N_target values are returned for an area target_area.
+    With a lagrangian_frame (in a full-lagrangian fit; see
+    altimetryFit.lagrangian_functions.lagrangianFrame), only the data that
+    will be in the fit's tile are used, and the scale is set from their
+    number, so that about N_target values are in the tile; the no-decimation
+    mask is evaluated in lagrangian coordinates.
+    '''
 
     if DEM_meta_config is None:
         DEM_meta_config={}
@@ -205,6 +217,11 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
     if not include_xtrack:
         xtrack_re=re.compile('_W(\d)W(\d)_')
         D = [ Di for Di in D if xtrack_re.search(Di.filename) is None ]
+    if lagrangian_frame is not None:
+        # use only the data that will be in the fit's tile
+        for Di in D:
+            Di.index(lagrangian_frame.select(Di.x, Di.y, Di.time))
+        D = [Di for Di in D if Di.size > 0]
     if target_area is None:
         target_area=W['x']*W['y']
     if VERBOSE:
@@ -247,7 +264,12 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
         N_unique = len(np.unique(np.round(np.concatenate([Di.x+1j*Di.y for Di in D])/DEM_res)))
         overlap = N_total/N_unique # average number of repeats per cell
         if N_total > N_target:
-            blockmedian_scale = np.maximum(blockmedian_scale, np.sqrt(target_area/(N_target/overlap)))
+            if lagrangian_frame is None:
+                blockmedian_scale = np.maximum(blockmedian_scale, np.sqrt(target_area/(N_target/overlap)))
+            else:
+                # the data are all in the tile: a DEM covering an area A gives
+                # A/scale**2 values, and the data cover N_total*DEM_res**2
+                blockmedian_scale = np.maximum(blockmedian_scale, DEM_res*np.sqrt(N_total/N_target))
             if VERBOSE:
                 print(f'\t read_DEM_data: DEM blockmedian scale = {np.round(blockmedian_scale)}')
 
@@ -263,7 +285,7 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
             continue
         if blockmedian_scale is not None:
             # data inside the no-decimation mask (if any) are not decimated
-            blockmedian_outside_mask(Di, blockmedian_scale, no_decimation_mask)
+            blockmedian_outside_mask(Di, blockmedian_scale, no_decimation_mask, frame=lagrangian_frame)
         if Di.size==0:
             continue
         this_sensor_number += 1

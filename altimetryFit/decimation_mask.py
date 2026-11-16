@@ -11,6 +11,12 @@ rifts on an ice shelf).  The data readers compute their decimation
 (blockmedian) scale from all of the data, as they do without a mask, and apply
 it only to the data outside the mask.  Data whose times are outside the time
 range of a time-varying mask are evaluated at the mask's first or last epoch.
+
+In a full-lagrangian fit, the readers are given the fit's
+lagrangian_functions.lagrangianFrame: the decimation scales are calculated
+from the data that will be in the tile, and the mask is evaluated at the
+positions of the data at the lagrangian epoch, so it is a mask in lagrangian
+coordinates (a 2-D mask is enough to follow features that move with the ice).
 """
 
 import numpy as np
@@ -62,7 +68,7 @@ def _covers_region(mask):
                for coord in ('x', 'y'))
 
 
-def in_no_decimation_mask(mask, x, y, t=None):
+def in_no_decimation_mask(mask, x, y, t=None, frame=None):
     '''
     Find the points that are inside a no-decimation mask
 
@@ -72,9 +78,12 @@ def in_no_decimation_mask(mask, x, y, t=None):
         the mask.  A 3-D mask is interpolated in time at t, with times outside
         the mask's time range moved to its first or last epoch.
     x, y : numpy arrays
-        point coordinates
+        point coordinates (where the points were measured)
     t : numpy array, optional
-        point times, needed if the mask has a time dimension
+        point times, needed if the mask has a time dimension, or with frame
+    frame : altimetryFit.lagrangian_functions.lagrangianFrame, optional
+        if given, the mask is evaluated at the positions of the points at
+        the lagrangian epoch (it is in lagrangian coordinates)
 
     Returns
     -------
@@ -84,6 +93,10 @@ def in_no_decimation_mask(mask, x, y, t=None):
         return np.zeros(np.shape(x), dtype=bool)
     field = 'z' if 'z' in mask.fields else mask.fields[0]
     shape = np.shape(x)
+    if frame is not None:
+        if t is None:
+            raise ValueError('in_no_decimation_mask: lagrangian coordinates need the data times')
+        x, y = frame.epoch_xy(x, y, t)
     xr, yr = [np.asarray(vals, dtype=float).ravel() for vals in (x, y)]
     if len(getattr(mask, field).shape) == 3:
         if t is None:
@@ -98,17 +111,20 @@ def in_no_decimation_mask(mask, x, y, t=None):
     return (np.nan_to_num(vals) > 0.5).reshape(shape)
 
 
-def blockmedian_outside_mask(D, scale, mask, field='z'):
+def blockmedian_outside_mask(D, scale, mask, field='z', frame=None):
     '''
     Blockmedian the points of D that are outside a no-decimation mask
 
     The points inside the mask are all kept.  D is modified in place (its
     fields become the decimated points outside the mask, followed by the points
     inside it), and is returned.  Without a mask, this is D.blockmedian(scale).
+    With a lagrangian frame (see in_no_decimation_mask), the mask is evaluated
+    at the positions of the points at the lagrangian epoch.
     '''
     if mask is None:
         return D.blockmedian(scale, field=field)
-    inside = in_no_decimation_mask(mask, D.x, D.y, D.time if 'time' in D.fields else None)
+    inside = in_no_decimation_mask(mask, D.x, D.y, D.time if 'time' in D.fields else None,
+                                   frame=frame)
     if not np.any(inside):
         return D.blockmedian(scale, field=field)
     if np.all(inside):

@@ -19,7 +19,8 @@ from altimetryFit.lagrangian_functions import setup_lagrangian, \
     update_output_data_for_lagrangian,\
     setup_lagrangian_fit,\
     parse_lagrangian_fit,\
-    advection_grid_epoch
+    advection_grid_epoch,\
+    lagrangianFrame
 import json
 import glob
 import h5py
@@ -304,6 +305,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
             replace=False, \
             xy_bias_file=None,\
             no_decimation_mask_file=None,\
+            decimate_before_advection=False,\
             tide_mask_keep_val=None,\
             tide_mask_keep_buffer=None,\
             firn_fixed=False, firn_rescale=False, \
@@ -396,6 +398,21 @@ def fit_altimetry(xy0=None, Width=4e4, \
             fit, and the dz mask shows when each parcel is grounded.
             lagrangian_mask_spacing sets the spacing of the advected masks
             (default: half the dz spacing).
+
+        Decimation in full-lagrangian fits:
+            The data are read for the area that the tile's parcels cover
+            during the fit, but are selected and decimated in the frame of the
+            fit (see lagrangian_functions.lagrangianFrame): the readers keep
+            only the data that are inside the data mask where they were
+            measured and inside the tile at the lagrangian epoch, compute the
+            decimation scales from those data, so that N_target gives the
+            numbers of data in the tile, and evaluate the no-decimation mask
+            (no_decimation_mask_file) at the positions at the epoch, so the
+            mask is in lagrangian coordinates.  decimate_before_advection=True
+            gives the earlier behavior: the data are decimated where they were
+            measured, with scales calculated over the whole read area, and the
+            no-decimation mask is evaluated at the measurement positions and
+            times.
     """
     print("fit_OIB: working on %s" % out_name)
 
@@ -553,6 +570,13 @@ def fit_altimetry(xy0=None, Width=4e4, \
             write_no_fit_file(no_fit_file, "no points in mask")
             return None, None, None
 
+    # in a full-lagrangian fit, the data are selected and decimated in the
+    # frame of the fit (see the docstring)
+    lagrangian_frame = None
+    if full_lagrangian and not decimate_before_advection:
+        lagrangian_frame = lagrangianFrame.from_lagrangian_dict(lagrangian_dict,
+                                                                 mask_data=data_selection_mask)
+
     pgc_url_file=None
     default_data_fields=['x','y','z','time','sigma','sigma_corr',
                          'slope_mag', 'sensor','spot', 'rgt','cycle','BP']
@@ -616,7 +640,8 @@ def fit_altimetry(xy0=None, Width=4e4, \
                                 problem_DEM_files=problem_DEM_files,
                                 seg_diff_tol=seg_diff_tol,
                                 xy_bias_file=xy_bias_file,
-                                no_decimation_mask=no_decimation_mask_file)
+                                no_decimation_mask=no_decimation_mask_file,
+                                lagrangian_frame=lagrangian_frame)
 
         if sensor_dict is None:
             sensor_dict={}
@@ -647,11 +672,18 @@ def fit_altimetry(xy0=None, Width=4e4, \
         data.assign({'day':np.floor(data.time*365.25)})
 
         if no_decimation_mask_file is not None:
-            # flag the data inside the no-decimation mask (evaluated, as in the readers, at the
-            # measurement positions and times), so that they get their own sigma_extra
-            no_decimation_mask = read_no_decimation_mask(no_decimation_mask_file, this_xy0, this_W)
+            # flag the data inside the no-decimation mask (evaluated as in the
+            # readers: at the measurement positions and times or, with a
+            # lagrangian frame, at the positions at the epoch), so that they
+            # get their own sigma_extra
+            if lagrangian_frame is None:
+                no_decimation_mask = read_no_decimation_mask(no_decimation_mask_file, this_xy0, this_W)
+            else:
+                no_decimation_mask = read_no_decimation_mask(no_decimation_mask_file, lagrangian_frame.xy0,
+                                                             lagrangian_frame.W)
             data.assign({'no_decimation':
-                         in_no_decimation_mask(no_decimation_mask, data.x, data.y, data.time).astype(float)})
+                         in_no_decimation_mask(no_decimation_mask, data.x, data.y, data.time,
+                                               frame=lagrangian_frame).astype(float)})
 
         if data.size==0:
             print("No data found, returning")
@@ -936,9 +968,10 @@ def parse_inputs(argv):
     parser.add_argument('--bias_nsigma_iteration', type=int, default=6, help='apply bias_nsigma_edit after this iteration')
     parser.add_argument('--bm_scale_laser', type=float, default=50, help="blockmedian scale to apply to laser data")
     parser.add_argument('--bm_scale_DEM', type=float, default=200, help='blockmedian scale to apply to DEM data')
-    parser.add_argument('--N_target_laser', type=float, default=200000, help='target number of laser data')
-    parser.add_argument('--N_target_DEM', type=float, default=800000, help='target number of DEM data')
-    parser.add_argument('--no_decimation_mask_file', type=path, help='raster file (geotif, or h5 with fields x, y, [t,] z) that is greater than 0.5 where data are not decimated.  The decimation (blockmedian) scales are calculated from all of the data, as without the mask, but are only applied outside it.  A mask with a time dimension is evaluated at the data times (e.g. to follow features that move with the ice).  The data inside the mask get their own sigma_extra (for altimetry and for DEMs), because their statistics differ from those of the decimated data.')
+    parser.add_argument('--N_target_laser', type=float, default=200000, help='target number of laser data.  In full-lagrangian fits, the number of data in the tile (see --decimate_before_advection)')
+    parser.add_argument('--N_target_DEM', type=float, default=800000, help='target number of DEM data.  In full-lagrangian fits, the number of data in the tile (see --decimate_before_advection)')
+    parser.add_argument('--no_decimation_mask_file', type=path, help='raster file (geotif, or h5 with fields x, y, [t,] z) that is greater than 0.5 where data are not decimated.  The decimation (blockmedian) scales are calculated from all of the data, as without the mask, but are only applied outside it.  A mask with a time dimension is evaluated at the data times.  In full-lagrangian fits, the mask is evaluated at the positions of the data at the lagrangian epoch (it is in lagrangian coordinates), unless --decimate_before_advection is set, in which case it is evaluated where the data were measured (a mask that follows features that move with the ice then needs a time dimension).  The data inside the mask get their own sigma_extra (for altimetry and for DEMs), because their statistics differ from those of the decimated data.')
+    parser.add_argument('--decimate_before_advection', action='store_true', help='in full-lagrangian fits, decimate the data where they were measured, with decimation scales calculated over the whole area read (the area the tile\'s parcels cover during the fit), and evaluate the no-decimation mask at the measurement positions, as before November 2026.  By default, the data are selected and decimated in the frame of the fit: only the data that will be in the tile are used to calculate the decimation scales, so the N_target values are counts of data in the tile, and the no-decimation mask is in lagrangian coordinates')
     parser.add_argument('--N_target', type=str, help='specify target data count for sensors as sensor:N, with multiple arguments separated by commas')
     parser.add_argument('--extra_error', type=float)
     parser.add_argument('--DEM_file', type=path, help='DEM file to use with the DEM_tol parameter and in slope error calculations')
@@ -1256,6 +1289,7 @@ def main(argv=None):
             N_target=args.N_target,\
             xy_bias_file=args.xy_bias_file,\
             no_decimation_mask_file=args.no_decimation_mask_file,\
+            decimate_before_advection=args.decimate_before_advection,\
             firn_directory=args.firn_directory,\
             firn_version=args.firn_version,\
             firn_correction=args.firn_model,\

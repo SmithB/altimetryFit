@@ -326,6 +326,101 @@ def advect_mask(mask_data, t_span=None, spacing=None, mask_spacing=None, max_sub
     return mask_epochs, mask_any
 
 
+def epoch_positions(advection_grid, x, y, t, zero_velocity=False):
+    """
+    Positions at the lagrangian epoch of the parcels measured at x, y at times t
+
+    advection_grid is a pointAdvection.advectionGrid (absolute times).  With
+    zero_velocity, the positions are unchanged.  The output arrays have the
+    shape of x.
+    """
+    if zero_velocity:
+        return np.copy(x), np.copy(y)
+    return (advection_grid.interp(x, y, t, field='x0'),
+            advection_grid.interp(x, y, t, field='y0'))
+
+
+def in_data_mask(mask_data, x, y, t):
+    """
+    True for points inside the data mask (> 0.5) where and when they were
+    measured.  A 2-D mask is evaluated at x, y, a 3-D mask at x, y, t.
+    """
+    if mask_data.z.ndim==2:
+        return mask_data.interp(x, y)>0.5
+    return mask_data.interp(x, y, t)>0.5
+
+
+class lagrangianFrame:
+    """
+    The frame in which the data of a full-lagrangian fit are selected and decimated
+
+    In a full-lagrangian fit, the data are read for the area that the tile's
+    parcels cover during the fit, and update_data_for_lagrangian keeps only
+    those that were measured inside the data mask and whose positions at the
+    lagrangian epoch are inside the tile.  Given a lagrangianFrame, the data
+    readers (read_optical_data and the readers it calls) find those data
+    before decimating: their decimation (blockmedian) scales are calculated
+    from them, so the N_target counts are the numbers of data in the tile,
+    and the no-decimation mask is evaluated at the positions at the epoch
+    (lagrangian coordinates), not where the data were measured.
+
+    Attributes
+    ----------
+    advection_grid : pointAdvection.advectionGrid
+        grid of the positions at the epoch (fields x0, y0)
+    xy0 : list
+        center of the tile, in lagrangian coordinates
+    Wxy : float
+        width of the tile
+    mask_data : pointCollection.grid.data or None
+        the data mask, evaluated where (and, if it is 3-D, when) the data
+        were measured
+    zero_velocity : bool
+        if True, the positions at the epoch are the measured positions
+    """
+    def __init__(self, advection_grid=None, xy0=None, Wxy=None, mask_data=None,
+                 zero_velocity=False):
+        self.advection_grid = advection_grid
+        self.xy0 = xy0
+        self.Wxy = Wxy
+        self.mask_data = mask_data
+        self.zero_velocity = zero_velocity
+
+    @classmethod
+    def from_lagrangian_dict(cls, lagrangian_dict, mask_data=None):
+        """the frame of a fit, from the output of setup_lagrangian"""
+        return cls(advection_grid=lagrangian_dict['advection_grid'],
+                   xy0=lagrangian_dict['xy0'], Wxy=lagrangian_dict['Wxy'],
+                   mask_data=mask_data,
+                   zero_velocity=bool(lagrangian_dict.get('lagrangian_zero_velocity', False)))
+
+    @property
+    def W(self):
+        """the width of the tile, as a dict with entries 'x' and 'y'"""
+        return {'x':self.Wxy, 'y':self.Wxy}
+
+    @property
+    def area(self):
+        """the area of the tile"""
+        return self.Wxy**2
+
+    def epoch_xy(self, x, y, t):
+        """positions at the epoch of the data measured at x, y at times t"""
+        return epoch_positions(self.advection_grid, x, y, t, zero_velocity=self.zero_velocity)
+
+    def select(self, x, y, t):
+        """
+        True for the data that update_data_for_lagrangian keeps: measured inside
+        the data mask, with positions at the epoch inside the tile.  The
+        output has the shape of x; points with NaN coordinates are not selected.
+        """
+        x0, y0 = self.epoch_xy(x, y, t)
+        keep = (np.abs(x0-self.xy0[0]) <= self.Wxy/2) & (np.abs(y0-self.xy0[1]) <= self.Wxy/2)
+        if self.mask_data is not None:
+            keep &= in_data_mask(self.mask_data, x, y, t)
+        return keep
+
+
 def update_data_for_lagrangian(data, lagrangian_ref_dem=None, mask_data=None, **kwargs):
     # default keyword arguments
     kwargs.setdefault('advection_obj', pointAdvection.advection())
@@ -360,21 +455,13 @@ def update_data_for_lagrangian(data, lagrangian_ref_dem=None, mask_data=None, **
         # if we are not moving the points, do nothing.
         return out_args
 
-    if not kwargs['lagrangian_zero_velocity']:
-        # advection_grid times are absolute
-        x0 = kwargs['advection_grid'].interp(data.x, data.y, data.time, field='x0')
-        y0 = kwargs['advection_grid'].interp(data.x, data.y, data.time, field='y0')
-    else:
-        x0=data.x.copy()
-        y0=data.y.copy()
+    x0, y0 = epoch_positions(kwargs['advection_grid'], data.x, data.y, data.time,
+                             zero_velocity=kwargs['lagrangian_zero_velocity'])
 
     if 'move_points' in kwargs and kwargs['move_points']:
         # use the mask data to remove data points that were measured at invalid locations
         if mask_data is not None:
-            if mask_data.z.ndim==2:
-                temp=mask_data.interp(data.x, data.y)>0.5
-            else:
-                temp=mask_data.interp(data.x, data.y, data.time)>0.5
+            temp=in_data_mask(mask_data, data.x, data.y, data.time)
             data.index(temp)
             x0=x0[temp]
             y0=y0[temp]

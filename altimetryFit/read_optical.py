@@ -106,7 +106,8 @@ def read_ATM_ICESSN(xy0, W, gI_files, sensor=3.5, track_identifier=None):
             D0 += temp
     return D0
 
-def read_ATM(xy0, W, gI_files, sensor=3, blockmedian_scale=100., slope_rescale=1., no_decimation_mask=None):
+def read_ATM(xy0, W, gI_files, sensor=3, blockmedian_scale=100., slope_rescale=1., no_decimation_mask=None,
+             lagrangian_frame=None):
     fields=['x','y','z', 'time','bias_50m', 'noise_50m', 'N_50m','slope_x','slope_y']
     if W is not None:
         dx=1.e4
@@ -142,11 +143,16 @@ def read_ATM(xy0, W, gI_files, sensor=3, blockmedian_scale=100., slope_rescale=1
         D0[ind]=D.copy_subset(good, datasets=['x','y','z','time',
                                               'sigma','sigma_corr','sensor',
                                               'slope_mag'])
-        if blockmedian_scale is not None:
-            blockmedian_outside_mask(D0[ind], blockmedian_scale, no_decimation_mask)
+        if lagrangian_frame is not None:
+            # use only the data that will be in the fit's tile
+            D0[ind].index(lagrangian_frame.select(D0[ind].x, D0[ind].y, D0[ind].time))
+        if blockmedian_scale is not None and D0[ind].size > 0:
+            blockmedian_outside_mask(D0[ind], blockmedian_scale, no_decimation_mask,
+                                     frame=lagrangian_frame)
     return D0
 
-def read_LVIS(xy0, W, gI_files, sensor=4, blockmedian_scale=100, no_decimation_mask=None):
+def read_LVIS(xy0, W, gI_files, sensor=4, blockmedian_scale=100, no_decimation_mask=None,
+              lagrangian_frame=None):
     fields={'x','y','z','time','bias_50m', 'noise_50m','slope_x','slope_y'}
     D0=[]
     for gI_file in gI_files:
@@ -179,8 +185,12 @@ def read_LVIS(xy0, W, gI_files, sensor=4, blockmedian_scale=100, no_decimation_m
         D0[ind]=D.copy_subset(good, datasets=['x','y','z','time','sigma',
                                               'sigma_corr','sensor',
                                               'slope_mag'])
+        if lagrangian_frame is not None:
+            # use only the data that will be in the fit's tile
+            D0[ind].index(lagrangian_frame.select(D0[ind].x, D0[ind].y, D0[ind].time))
         if D0[ind].size > 5:
-            blockmedian_outside_mask(D0[ind], blockmedian_scale, no_decimation_mask)
+            blockmedian_outside_mask(D0[ind], blockmedian_scale, no_decimation_mask,
+                                     frame=lagrangian_frame)
     return D0
 
 
@@ -203,7 +213,8 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
               data_sigma_max=None,
               problem_DEM_files=None,
               xy_bias_file=None,
-              no_decimation_mask=None):
+              no_decimation_mask=None,
+              lagrangian_frame=None):
     """
     Read laser-altimetry and DEM data from geoIndex files.
 
@@ -258,6 +269,13 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
         all of the data, as without a mask, but it is only applied outside the
         mask.  If the mask has a time dimension, it is evaluated at the data
         times. See altimetryFit.decimation_mask.  The default is None.
+    lagrangian_frame: altimetryFit.lagrangian_functions.lagrangianFrame, optional
+        In a full-lagrangian fit, the frame of the fit.  The data are read
+        for xy0, W (the area that the tile's parcels cover during the fit),
+        but the decimated sensors (ICESat-2, ATM, LVIS and DEMs) keep only
+        the data that will be in the tile, their N_target values are counts
+        of data in the tile, and the no-decimation mask is in lagrangian
+        coordinates.  The default is None.
 
     Returns
     -------
@@ -281,7 +299,12 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
             DEM.calc_gradient()
     if bm_scale is None:
         bm_scale={'laser':100, 'DEM':200}
-    no_decimation_mask = read_no_decimation_mask(no_decimation_mask, xy0, W)
+    if lagrangian_frame is None:
+        no_decimation_mask = read_no_decimation_mask(no_decimation_mask, xy0, W)
+    else:
+        # the mask is in lagrangian coordinates: read it for the tile
+        no_decimation_mask = read_no_decimation_mask(no_decimation_mask, lagrangian_frame.xy0,
+                                                     lagrangian_frame.W)
 
     if 'ICESat2' in GI_files:
 
@@ -294,7 +317,8 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
                     seg_diff_tol=seg_diff_tol,
                     DEM_slope_bias_scale=DEM_slope_bias_scale,
                     t_range=time_range,
-                    no_decimation_mask=no_decimation_mask)
+                    no_decimation_mask=no_decimation_mask,
+                    lagrangian_frame=lagrangian_frame)
 
         for Di in D:
             if not hasattr(Di,'x'):
@@ -330,13 +354,15 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
         D_LVIS=read_LVIS(xy0, W,
                          find_gI_files(GI_files['LVIS']),
                          blockmedian_scale=bm_scale['laser'], sensor=laser_dict['LVIS'],
-                         no_decimation_mask=no_decimation_mask)
+                         no_decimation_mask=no_decimation_mask,
+                         lagrangian_frame=lagrangian_frame)
         if D_LVIS is not None:
             D += D_LVIS
     if 'ATM' in GI_files:
         D_ATM = read_ATM(xy0, W, find_gI_files(GI_files['ATM'])
                          , blockmedian_scale=bm_scale['laser'], sensor=laser_dict['ATM'],
-                         no_decimation_mask=no_decimation_mask)
+                         no_decimation_mask=no_decimation_mask,
+                         lagrangian_frame=lagrangian_frame)
         if D_ATM is not None:
             D += D_ATM
     if 'ATM_ICESSN' in GI_files:
@@ -368,7 +394,8 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
                             subset_stack=dem_subset_TF,
                             data_sigma_max=data_sigma_max,
                             year_offset=year_offset,
-                            no_decimation_mask=no_decimation_mask)
+                            no_decimation_mask=no_decimation_mask,
+                            lagrangian_frame=lagrangian_frame)
         if D_DEM is not None:
             D += D_DEM
     if len(D)==0:
