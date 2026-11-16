@@ -1155,7 +1155,7 @@ def parse_inputs(argv):
 
     for thedir in [args.base_directory, dest_dir]:
         try:
-            os.mkdir(dest_dir)
+            os.makedirs(thedir, exist_ok=True)
         except (FileExistsError, TypeError):
             pass
 
