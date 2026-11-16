@@ -51,6 +51,7 @@ except Exception:
 from altimetryFit import SMB_corr_from_grid
 from altimetryFit.read_optical import read_optical_data, laser_key
 from altimetryFit.decimation_mask import read_no_decimation_mask, in_no_decimation_mask
+from altimetryFit.slope_bias import slope_fields_from_fit
 from altimetryFit.read_DEM_data import regen_DEM_meta
 from altimetryFit.read_CS2_data import read_CS2_data, radar_key
 from altimetryFit.apply_tides import apply_tides, check_tide_model
@@ -290,6 +291,9 @@ def fit_altimetry(xy0=None, Width=4e4, \
             t_span=[2003, 2020],\
             spacing={'z0':2.5e2, 'dz':5.e2, 'dt':0.5}, \
             DEM_slope_bias_scale=None, \
+            slope_bias_from_z0=None, \
+            slope_bias_E_geo=None, \
+            slope_bias_E_rate=0., \
             hemisphere=1, reference_epoch=None, \
             reread_dirs=None,\
             max_iterations=5, \
@@ -413,6 +417,18 @@ def fit_altimetry(xy0=None, Width=4e4, \
             measured, with scales calculated over the whole read area, and the
             no-decimation mask is evaluated at the measurement positions and
             times.
+
+        Horizontal-offset (slope) biases from the fit:
+            With slope_bias_from_z0=N, the fit runs N iterations without slope
+            biases, the slopes of that fit's z0 (+ dz) are interpolated to the
+            data (see slope_bias.slope_fields_from_fit), and the fit is rerun,
+            starting from the first pass's edits, for max_iterations - N (at
+            least 2) iterations with a horizontal offset (dx, dy) for each
+            bias_ID, entering as dx*z_x + dy*z_y.  The expected offset is the
+            geolocation error for the sensor type (slope_bias_E_geo, default
+            3.5 m for ICESat-2 and 5 m for DEMs) combined, in full-lagrangian
+            fits, with slope_bias_E_rate (m/yr) times the time from the
+            lagrangian epoch, for errors in the advection.
     """
     print("fit_OIB: working on %s" % out_name)
 
@@ -581,6 +597,8 @@ def fit_altimetry(xy0=None, Width=4e4, \
     default_data_fields=['x','y','z','time','sigma','sigma_corr',
                          'slope_mag', 'sensor','spot', 'rgt','cycle','BP']
     data_scale_fields = None
+    if DEM_slope_bias_scale is not None and slope_bias_from_z0 is not None:
+        raise ValueError('use either DEM_slope_bias_scale (slopes from a DEM file) or slope_bias_from_z0 (slopes from the fit), not both')
     if DEM_slope_bias_scale is not None:
         data_scale_fields=['z_x','z_y']
         default_data_fields += data_scale_fields
@@ -847,7 +865,7 @@ def fit_altimetry(xy0=None, Width=4e4, \
     if verbose:
         print("="*50)
         print("about to run smooth_fit with bias params="+str(bias_params))
-    S=smooth_fit(data=data, ctr=ctr, W=W, spacing=spacing, E_RMS=E_RMS0,
+    fit_kwargs=dict(data=data, ctr=ctr, W=W, spacing=spacing, E_RMS=E_RMS0,
                      return_fit_objects=return_fit_objects,
                      reference_epoch=reference_epoch,
                      compute_E=calc_error,
@@ -880,6 +898,38 @@ def fit_altimetry(xy0=None, Width=4e4, \
                      cholmod_cache_ordering=cholmod_cache_ordering,
                      fine_grid_args=fine_grid_args,
                      THREADS=THREADS)
+
+    if slope_bias_from_z0 is None or return_fit_objects:
+        S=smooth_fit(**fit_kwargs)
+    elif all(field in data.fields for field in ['z_x', 'z_y', 'E_scale_z_x', 'E_scale_z_y']):
+        # data reread from a fit that estimated slope biases: use their slope fields
+        S=smooth_fit(**(fit_kwargs | {'data_scale_fields':['z_x', 'z_y']}))
+    else:
+        # two passes: fit without slope biases for slope_bias_from_z0 iterations,
+        # take the slopes from that fit's z0 and dz, then fit with horizontal-offset
+        # (slope-scaled) biases for each bias_ID, starting from the first pass's edits
+        n_first = int(slope_bias_from_z0)
+        if verbose:
+            print(f"fit_altimetry: slope biases from z0: first pass, {n_first} iterations without slope biases")
+        S1=smooth_fit(**(fit_kwargs | {'max_iterations':n_first, 'data_scale_fields':None}))
+        if S1['data'] is None or S1['data'].size == 0 or 'z0' not in S1['m']:
+            S=S1
+        else:
+            data1=S1['data']
+            t_epoch = lagrangian_dict['lagrangian_epoch'] if full_lagrangian else None
+            if slope_bias_E_rate and t_epoch is None:
+                print("fit_altimetry: slope_bias_E_rate is only used in full-lagrangian fits; ignoring it")
+            scale_fields = slope_fields_from_fit(data1, S1['m'], E_geo=slope_bias_E_geo,
+                                                 E_rate=slope_bias_E_rate, t_epoch=t_epoch)
+            n_second = max(max_iterations - n_first, 2)
+            if verbose:
+                print(f"fit_altimetry: slope biases from z0: second pass, up to {n_second} iterations; "
+                      f"median |slope| {np.median(np.hypot(data1.z_x, data1.z_y)):.3f}, "
+                      f"expected offsets {np.min(data1.E_scale_z_x):.1f}-{np.max(data1.E_scale_z_x):.1f} m")
+            S=smooth_fit(**(fit_kwargs | {'data':data1, 'max_iterations':n_second,
+                                          'data_scale_fields':scale_fields}))
+            S['timing']['slope_bias_first_pass'] = sum(val for val in S1['timing'].values()
+                                                        if np.isscalar(val))
 
     if return_fit_objects:
         return S
@@ -978,6 +1028,9 @@ def parse_inputs(argv):
     parser.add_argument('--DEM_tol', type=float, help='Tolerance for selecting points relative to the DEM file')
     parser.add_argument('--DEM_dt_min', type=float, help="if two DEMs are closer to time than this value, data from the one with the larger errors will be deleted")
     parser.add_argument('--DEM_slope_bias_scale', type=str, help='if specified, the bias the surface slope from the DEM times the geolocation error')
+    parser.add_argument('--slope_bias_from_z0', type=int, help='estimate a horizontal offset for each bias_ID (a bias that scales the surface slopes, as --DEM_slope_bias_scale does), with the slopes taken from the fit itself: run this many iterations without slope biases, compute the slopes of that fit\'s z0 (+ dz) at the data, then fit with the slope biases for the remaining max_iterations (at least 2), starting from the first pass\'s edits')
+    parser.add_argument('--slope_bias_E_geo', type=str, default='ICESat2:3.5,DEM:5,other:1', help='with --slope_bias_from_z0: expected horizontal geolocation error (m) for each type of sensor, as type:value pairs')
+    parser.add_argument('--slope_bias_E_rate', type=float, default=0., help='with --slope_bias_from_z0, in full-lagrangian fits: expected growth of the horizontal error with time from the lagrangian epoch (m/yr; errors in the velocity field), added in quadrature to the geolocation error')
     parser.add_argument('--data_sigma_max', type=float, help="points with sigma estimates larger than this value will be ignored")
     parser.add_argument('--problem_DEM_files', type=str, help='files listing problematic DEM files, comma separated')
     parser.add_argument('--map_dir','-m', type=path)
@@ -1332,6 +1385,9 @@ def main(argv=None):
             DEM_sigma_corr=args.DEM_sigma_corr,\
             DEM_grid_bias_params=args.DEM_bias_params,\
             DEM_slope_bias_scale=args.DEM_slope_bias_scale,\
+            slope_bias_from_z0=args.slope_bias_from_z0,\
+            slope_bias_E_geo=args.slope_bias_E_geo,\
+            slope_bias_E_rate=args.slope_bias_E_rate,\
             solver='spqr' if args.sparseqr else 'cholmod',\
             cholmod_scale_columns=args.cholmod_scale_columns,\
             cholmod_cache_ordering=args.cholmod_cache_ordering,\
