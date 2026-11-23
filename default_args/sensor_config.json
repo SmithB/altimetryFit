@@ -1,0 +1,56 @@
+{
+    "_comment": [
+        "Sensor numbers and geolocation errors for altimetryFit (the defaults in altimetryFit/sensors.py).",
+        "Use with fit_altimetry.py --sensor_config_file, or set the environment variable ALTIMETRYFIT_SENSOR_CONFIG to its path.",
+        "Entries given replace the defaults; a given altimeters entry replaces the whole set of altimeters.",
+        "DEMs are numbered from one more than the largest altimeter number.  CS2_swath must be CS2_POCA+1.",
+        "geolocation_error: expected horizontal geolocation error (m) by altimeter name, DEM, or other (for --slope_bias_from_z0 and --DEM_slope_bias_scale)."
+    ],
+    "altimeters": {
+        "ICESat1": {
+            "number": 1,
+            "type": "laser",
+            "platform": "orbital"
+        },
+        "ICESat2": {
+            "number": 2,
+            "type": "laser",
+            "platform": "orbital"
+        },
+        "ATM": {
+            "number": 3,
+            "type": "laser",
+            "platform": "airborne"
+        },
+        "ATM_ICESSN": {
+            "number": 3.5,
+            "type": "laser",
+            "platform": "airborne"
+        },
+        "LVIS": {
+            "number": 4,
+            "type": "laser",
+            "platform": "airborne"
+        },
+        "riegl": {
+            "number": 5,
+            "type": "laser",
+            "platform": "airborne"
+        },
+        "CS2_POCA": {
+            "number": -2,
+            "type": "radar",
+            "platform": "orbital"
+        },
+        "CS2_swath": {
+            "number": -1,
+            "type": "radar",
+            "platform": "orbital"
+        }
+    },
+    "geolocation_error": {
+        "ICESat2": 3.5,
+        "DEM": 5.0,
+        "other": 1.0
+    }
+}

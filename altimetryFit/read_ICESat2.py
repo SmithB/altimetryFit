@@ -8,6 +8,7 @@ Created on Tue Aug 20 15:00:05 2019
 import numpy as np
 from .check_ATL06_hold_list import read_ATL06_hold_files as read_hold_files
 from .decimation_mask import in_no_decimation_mask
+from .sensors import laser_key
 #from PointDatabase.geo_index import geo_index
 #from PointDatabase.point_data import point_data
 #from PointDatabase.ATL06_filters import segDifferenceFilter
@@ -66,7 +67,7 @@ def segDifferenceFilter(D6, tol=2, setValid=True, toNaN=False, subset=False):
     return mask
 
 
-def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
+def read_ICESat2(xy0, W, gI_files, sensor=None, SRS_proj4=None, tiled=True, \
                  remove_overlap=False,
                  apply_hold_list=False,
                  seg_diff_tol=2, blockmedian_scale=None, cplx_accept_threshold=0.,
@@ -83,7 +84,10 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
     set from the along-track length of their pairs (the blockmedian pools the
     two beams of a pair), so that about N_target values are in the tile, and
     the no-decimation mask is evaluated in lagrangian coordinates.
+    The sensor number defaults to that of ICESat2 in altimetryFit.sensors.
     '''
+    if sensor is None:
+        sensor=laser_key()['ICESat2']
     field_dict={None:['delta_time','h_li','h_li_sigma','latitude','longitude','atl06_quality_summary','segment_id','sigma_geo_h'],
                 'fit_statistics':['dh_fit_dx', 'dh_fit_dy', 'n_fit_photons','w_surface_window_final','snr_significance'],
                 'geophysical':['tide_ocean'],
@@ -202,10 +206,13 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
         D.z[D.quality==1] = np.nan
         if lagrangian_frame is not None:
             # use only the segments that will be in the fit's tile (they are
-            # edited first, so the edits don't depend on the tile)
+            # edited first, so the edits don't depend on the tile), and keep
+            # their positions at the epoch (x_epoch, y_epoch), which the
+            # blockmedian averages with the other fields
             if 'x' not in D.fields:
                 D.get_xy(SRS_proj4)
-            D.z[~lagrangian_frame.select(D.x, D.y, D.time)] = np.nan
+            xy_epoch = lagrangian_frame.assign_epoch_xy(D)
+            D.z[~lagrangian_frame.select(D.x, D.y, D.time, xy_epoch=xy_epoch)] = np.nan
 
     if N_target is not None and lagrangian_frame is not None:
         # the blockmedian pools the two beams of each pair along track, so a
@@ -225,8 +232,9 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
                 # and are left out of the blockmedian
                 if no_decimation_mask is not None and 'x' not in D.fields:
                     D.get_xy(SRS_proj4)
+                xy_epoch = (D.x_epoch, D.y_epoch) if 'x_epoch' in D.fields else None
                 inside = in_no_decimation_mask(no_decimation_mask, D.x, D.y, D.time,
-                                               frame=lagrangian_frame) & np.isfinite(D.z)
+                                               frame=lagrangian_frame, xy_epoch=xy_epoch) & np.isfinite(D.z)
                 z_bm = D.z.copy()
                 z_bm[inside] = np.nan
                 # blockmedian by the mean of strong and weak beams
@@ -242,6 +250,13 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
                     else:
                         bm_vals=np.zeros(0, dtype=temp.dtype)
                     setattr(D, field, np.concatenate([bm_vals, temp[i_inside]]))
+                if 'x_epoch' in D.fields and len(bm_ind) > 0:
+                    # values that average two segments: their positions at the
+                    # epoch are interpolated again, at the averaged position
+                    # (see decimation_mask.blockmedian)
+                    averaged = np.flatnonzero(bm_ind[:, 0] != bm_ind[:, 1])
+                    D.x_epoch[averaged] = np.nan
+                    D.y_epoch[averaged] = np.nan
 
         if 'x' not in D.fields:
             D.get_xy(SRS_proj4)
@@ -261,12 +276,18 @@ def read_ICESat2(xy0, W, gI_files, sensor=2, SRS_proj4=None, tiled=True, \
             sigma_corr[ind]=0.03
         if ~np.isfinite(sigma_corr[ind]):
             sigma_corr[ind]=0.1
-        D.assign({'sigma_corr':np.zeros_like(D.z)+sigma_corr[ind]})
-        D1[ind]=D.copy_subset(np.flatnonzero(np.isfinite(D.z)),
-                              datasets=['x','y','z','time', 'delta_time',
-                                        'sigma','sigma_corr','rgt','cycle',
-                                        'spot', 'sensor', 'BP','LR',
-                                        'ref_coelv','ref_azimuth','seg_azimuth','h_li'])
+        # sigma_corr_base: sigma_corr without the slope term (the vertical
+        # expression of the geolocation error), for fits that estimate
+        # horizontal offsets (slope biases) instead
+        D.assign({'sigma_corr':np.zeros_like(D.z)+sigma_corr[ind],
+                  'sigma_corr_base':np.zeros_like(D.z)+0.03})
+        datasets=['x','y','z','time', 'delta_time',
+                  'sigma','sigma_corr','sigma_corr_base','rgt','cycle',
+                  'spot', 'sensor', 'BP','LR',
+                  'ref_coelv','ref_azimuth','seg_azimuth','h_li']
+        if 'x_epoch' in D.fields:
+            datasets += ['x_epoch', 'y_epoch']
+        D1[ind]=D.copy_subset(np.flatnonzero(np.isfinite(D.z)), datasets=datasets)
 
     return [Di for Di in D1 if 'z' in Di.fields and np.any(np.isfinite(Di.z))]
 

@@ -408,20 +408,117 @@ class lagrangianFrame:
         """positions at the epoch of the data measured at x, y at times t"""
         return epoch_positions(self.advection_grid, x, y, t, zero_velocity=self.zero_velocity)
 
-    def select(self, x, y, t):
+    def select(self, x, y, t, xy_epoch=None):
         """
         True for the data that update_data_for_lagrangian keeps: measured inside
         the data mask, with positions at the epoch inside the tile.  The
         output has the shape of x; points with NaN coordinates are not selected.
+        xy_epoch, if given, is (x_epoch, y_epoch), the positions at the epoch
+        (from epoch_xy), so that they are not interpolated again.
         """
-        x0, y0 = self.epoch_xy(x, y, t)
+        if xy_epoch is None:
+            x0, y0 = self.epoch_xy(x, y, t)
+        else:
+            x0, y0 = xy_epoch
         keep = (np.abs(x0-self.xy0[0]) <= self.Wxy/2) & (np.abs(y0-self.xy0[1]) <= self.Wxy/2)
         if self.mask_data is not None:
             keep &= in_data_mask(self.mask_data, x, y, t)
         return keep
 
+    def assign_epoch_xy(self, D):
+        """
+        Assign the positions at the epoch of the data in D (fields x_epoch,
+        y_epoch), and return them
+
+        The readers assign them to the raw data, so that the positions are
+        interpolated from the advection grid once: decimation keeps (or
+        averages) them with the other fields, and the no-decimation mask
+        and update_data_for_lagrangian use them.
+        """
+        x0, y0 = self.epoch_xy(D.x, D.y, D.time)
+        D.assign(x_epoch=x0, y_epoch=y0)
+        return x0, y0
+
+    def select_data(self, D):
+        """
+        Assign x_epoch, y_epoch to the data in D (see assign_epoch_xy), and
+        keep the data that update_data_for_lagrangian keeps (see select).
+        D is modified in place and returned.
+        """
+        xy_epoch = self.assign_epoch_xy(D)
+        D.index(self.select(D.x, D.y, D.time, xy_epoch=xy_epoch))
+        return D
+
+    def complete_epoch_xy(self, D):
+        """
+        Make sure the data in D have positions at the epoch (x_epoch,
+        y_epoch): interpolate them for the data that have none (NaN, e.g.
+        data from readers that do not use the frame).  D is modified in place.
+        """
+        if 'x_epoch' not in D.fields or 'y_epoch' not in D.fields:
+            self.assign_epoch_xy(D)
+            return D
+        missing = ~(np.isfinite(D.x_epoch) & np.isfinite(D.y_epoch))
+        if np.any(missing):
+            x0, y0 = self.epoch_xy(D.x[missing], D.y[missing], D.time[missing])
+            D.x_epoch[missing] = x0
+            D.y_epoch[missing] = y0
+        return D
+
+
+def _remove_fields(data, fields):
+    for field in fields:
+        if field in data.fields:
+            data.fields.remove(field)
+            if hasattr(data, field):
+                delattr(data, field)
+
+
+def subtract_lagrangian_ref_dem(data, lagrangian_ref_dem, reread_data=False):
+    """
+    Subtract a reference DEM (lagrangian_ref_dem, a geotif) from the data
+    heights, at the positions where the data were measured (data.x, data.y,
+    which must not yet be advected)
+
+    The heights before the subtraction are kept in the field z0; data with no
+    DEM value are removed.  Data reread from a fit (reread_data) that have a
+    z0 field already had the DEM subtracted by that fit, so they are left as
+    they are (subtracting it again would remove it twice, and overwrite z0).
+    """
+    if reread_data and 'z0' in data.fields:
+        if lagrangian_ref_dem is not None:
+            print('update_data_for_lagrangian: the reread data had the lagrangian reference DEM '
+                  'subtracted by the fit that wrote them (their z0 field holds the heights before): '
+                  'not subtracting it again')
+        else:
+            print('update_data_for_lagrangian: the reread data had a lagrangian reference DEM '
+                  'subtracted by the fit that wrote them (their z0 field holds the heights before), '
+                  'but no lagrangian_ref_dem is given: the fit is relative to that DEM')
+        return data
+    if lagrangian_ref_dem is None:
+        return data
+    print(f'Subtracting reference dem from {lagrangian_ref_dem}')
+    data.assign(z0=data.z.copy())
+    data.z -= pc.grid.data().from_geotif(lagrangian_ref_dem,
+        bounds=data.bounds()).interp(data.x, data.y)
+    data.index(np.isfinite(data.z))
+    return data
+
 
 def update_data_for_lagrangian(data, lagrangian_ref_dem=None, mask_data=None, **kwargs):
+    """
+    Prepare data for a lagrangian fit
+
+    Subtracts lagrangian_ref_dem (if given; see subtract_lagrangian_ref_dem),
+    then, in a full-lagrangian fit (move_points), keeps the data measured
+    inside mask_data whose positions at the lagrangian epoch are inside the
+    tile, and moves them to those positions (the measured positions are kept
+    in x_original, y_original); otherwise, assigns the positions at the epoch
+    to x_lag, y_lag.  The positions at the epoch are the data's x_epoch,
+    y_epoch fields, if the readers assigned them (lagrangianFrame), and are
+    otherwise interpolated from the advection grid.  Data reread from a fit
+    (reread_data=True) that have x_lag fields are not moved again.
+    """
     # default keyword arguments
     kwargs.setdefault('advection_obj', pointAdvection.advection())
     kwargs.setdefault('lagrangian_interpolation', 'linear')
@@ -430,16 +527,12 @@ def update_data_for_lagrangian(data, lagrangian_ref_dem=None, mask_data=None, **
     kwargs.setdefault('xy0', [None,None])
     kwargs.setdefault('Wxy', 0)
     kwargs.setdefault('reread_data', False)
+    kwargs.setdefault('lagrangian_zero_velocity', False)
 
     # get latitude and longitude of the original data
     data.get_latlon(proj4_string=kwargs['SRS_proj4'])
 
-    if lagrangian_ref_dem is not None:
-        print(f'Subtracting reference dem from {lagrangian_ref_dem}')
-        data.assign(z0=data.z.copy())
-        data.z -= pc.grid.data().from_geotif(lagrangian_ref_dem,
-            bounds=data.bounds()).interp(data.x, data.y)
-        data.index(np.isfinite(data.z))
+    subtract_lagrangian_ref_dem(data, lagrangian_ref_dem, reread_data=kwargs['reread_data'])
 
     if kwargs['reread_data'] and 'x_lag' in data.fields:
         if 'move_points' in kwargs and kwargs['move_points']:
@@ -455,8 +548,19 @@ def update_data_for_lagrangian(data, lagrangian_ref_dem=None, mask_data=None, **
         # if we are not moving the points, do nothing.
         return out_args
 
-    x0, y0 = epoch_positions(kwargs['advection_grid'], data.x, data.y, data.time,
-                             zero_velocity=kwargs['lagrangian_zero_velocity'])
+    if 'x_epoch' in data.fields and 'y_epoch' in data.fields:
+        # positions at the epoch, from the readers (see lagrangianFrame.assign_epoch_xy)
+        x0, y0 = data.x_epoch.copy(), data.y_epoch.copy()
+        missing = ~(np.isfinite(x0) & np.isfinite(y0))
+        if np.any(missing):
+            x0[missing], y0[missing] = epoch_positions(kwargs['advection_grid'], data.x[missing],
+                                                       data.y[missing], data.time[missing],
+                                                       zero_velocity=kwargs['lagrangian_zero_velocity'])
+        # (x0, y0 become x, y or x_lag, y_lag)
+        _remove_fields(data, ['x_epoch', 'y_epoch'])
+    else:
+        x0, y0 = epoch_positions(kwargs['advection_grid'], data.x, data.y, data.time,
+                                 zero_velocity=kwargs['lagrangian_zero_velocity'])
 
     if 'move_points' in kwargs and kwargs['move_points']:
         # use the mask data to remove data points that were measured at invalid locations

@@ -11,6 +11,7 @@ import re
 import numpy as np
 import pointCollection as pc
 import os
+from altimetryFit.sensors import sensor_from_attr_name
 
 
 def make_sensor_dict(h5f):
@@ -24,10 +25,8 @@ def make_sensor_dict(h5f):
     if '/meta/sensors/' not in h5f:
         return this_sensor_dict
 
-    sensor_re=re.compile('sensor_(\d+)')
     for sensor_key, sensor in h5f['/meta/sensors/'].attrs.items():
-       sensor_num=int(sensor_re.search(sensor_key).group(1))
-       this_sensor_dict[sensor]=sensor_num
+       this_sensor_dict[sensor]=sensor_from_attr_name(sensor_key)
     return this_sensor_dict
 
 def reconcile_sensors(sensor_key_list):

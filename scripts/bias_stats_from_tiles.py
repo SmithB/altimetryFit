@@ -9,6 +9,7 @@ import os
 import glob
 import h5py
 import sys
+from altimetryFit.sensors import sensor_from_attr_name
 
 import argparse
 
@@ -66,7 +67,7 @@ def main():
         sensor_dict={}
         with h5py.File(tile,'r') as h5f:
             for key, val in h5f['/meta/sensors'].attrs.items():
-                sensor_dict[int(key.split('_')[1])] = val
+                sensor_dict[sensor_from_attr_name(key)] = val
                 if 'SETSM' not in val and val not in not_DEM_sensors:
                     not_DEM_sensors += [val]
         for sensor in sensor_dict.values():
@@ -75,7 +76,9 @@ def main():
 
         for count, sensor in enumerate(B.sensor):
             t_stats={}
-            t_stats['sensor_ind'] = all_sensors.index(sensor_dict[int(sensor)])
+            # files written before 11/2026 named sensor 3.5 sensor_3
+            this_sensor = sensor_dict[sensor] if sensor in sensor_dict else sensor_dict[int(sensor)]
+            t_stats['sensor_ind'] = all_sensors.index(this_sensor)
             t_stats['x0'] = x0
             t_stats['y0'] = y0
             t_stats['bias'] = B.val[count]

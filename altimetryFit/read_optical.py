@@ -12,12 +12,11 @@ from altimetryFit.read_ICESat2 import read_ICESat2
 from LSsurf.matlab_to_year import matlab_to_year
 from altimetryFit.read_DEM_data import read_DEM_data
 from altimetryFit.decimation_mask import read_no_decimation_mask, blockmedian_outside_mask
+# laser_key is defined in altimetryFit.sensors (imported here for older code)
+from altimetryFit.sensors import laser_key, geolocation_error
 import pointCollection as pc
 
 import glob
-
-def laser_key():
-    return {'ICESat1':1, 'ICESat2':2, 'ATM':3, 'ATM_ICESSN':3.5, 'LVIS':4, 'riegl':5}
 
 def find_gI_files(gI_files):
 
@@ -32,8 +31,10 @@ def find_gI_files(gI_files):
     return out_list
 
 
-def read_ICESat(xy0, W, gI_files, sensor=1, hemisphere=-1, DEM=None):
+def read_ICESat(xy0, W, gI_files, sensor=None, hemisphere=-1, DEM=None):
     #fields=[ 'IceSVar', 'deltaEllip', 'numPk', 'ocElv', 'reflctUC', 'satElevCorr',  'time',  'x', 'y', 'z']
+    if sensor is None:
+        sensor=laser_key()['ICESat1']
     fields=['x','y','z','time']
     D0=[]
     box=[xy0[0]+np.array([-W['x']/2, W['x']/2]), xy0[1]+np.array([-W['y']/2, W['y']/2])]
@@ -71,7 +72,9 @@ def read_ICESat(xy0, W, gI_files, sensor=1, hemisphere=-1, DEM=None):
     return D0
 
 
-def read_ATM_ICESSN(xy0, W, gI_files, sensor=3.5, track_identifier=None):
+def read_ATM_ICESSN(xy0, W, gI_files, sensor=None, track_identifier=None):
+    if sensor is None:
+        sensor=laser_key()['ATM_ICESSN']
     fields=['x','y','z','time','sigma', 'track_identifier','south_to_north_slope','west_to_east_slope']
 
     if isinstance(track_identifier, (int, float)):
@@ -106,8 +109,10 @@ def read_ATM_ICESSN(xy0, W, gI_files, sensor=3.5, track_identifier=None):
             D0 += temp
     return D0
 
-def read_ATM(xy0, W, gI_files, sensor=3, blockmedian_scale=100., slope_rescale=1., no_decimation_mask=None,
+def read_ATM(xy0, W, gI_files, sensor=None, blockmedian_scale=100., slope_rescale=1., no_decimation_mask=None,
              lagrangian_frame=None):
+    if sensor is None:
+        sensor=laser_key()['ATM']
     fields=['x','y','z', 'time','bias_50m', 'noise_50m', 'N_50m','slope_x','slope_y']
     if W is not None:
         dx=1.e4
@@ -144,15 +149,18 @@ def read_ATM(xy0, W, gI_files, sensor=3, blockmedian_scale=100., slope_rescale=1
                                               'sigma','sigma_corr','sensor',
                                               'slope_mag'])
         if lagrangian_frame is not None:
-            # use only the data that will be in the fit's tile
-            D0[ind].index(lagrangian_frame.select(D0[ind].x, D0[ind].y, D0[ind].time))
+            # use only the data that will be in the fit's tile (and keep
+            # their positions at the epoch, x_epoch and y_epoch)
+            lagrangian_frame.select_data(D0[ind])
         if blockmedian_scale is not None and D0[ind].size > 0:
             blockmedian_outside_mask(D0[ind], blockmedian_scale, no_decimation_mask,
                                      frame=lagrangian_frame)
     return D0
 
-def read_LVIS(xy0, W, gI_files, sensor=4, blockmedian_scale=100, no_decimation_mask=None,
+def read_LVIS(xy0, W, gI_files, sensor=None, blockmedian_scale=100, no_decimation_mask=None,
               lagrangian_frame=None):
+    if sensor is None:
+        sensor=laser_key()['LVIS']
     fields={'x','y','z','time','bias_50m', 'noise_50m','slope_x','slope_y'}
     D0=[]
     for gI_file in gI_files:
@@ -186,8 +194,9 @@ def read_LVIS(xy0, W, gI_files, sensor=4, blockmedian_scale=100, no_decimation_m
                                               'sigma_corr','sensor',
                                               'slope_mag'])
         if lagrangian_frame is not None:
-            # use only the data that will be in the fit's tile
-            D0[ind].index(lagrangian_frame.select(D0[ind].x, D0[ind].y, D0[ind].time))
+            # use only the data that will be in the fit's tile (and keep
+            # their positions at the epoch, x_epoch and y_epoch)
+            lagrangian_frame.select_data(D0[ind])
         if D0[ind].size > 5:
             blockmedian_outside_mask(D0[ind], blockmedian_scale, no_decimation_mask,
                                      frame=lagrangian_frame)
@@ -214,7 +223,8 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
               problem_DEM_files=None,
               xy_bias_file=None,
               no_decimation_mask=None,
-              lagrangian_frame=None):
+              lagrangian_frame=None,
+              read_DEM_shift_estimates=False):
     """
     Read laser-altimetry and DEM data from geoIndex files.
 
@@ -275,7 +285,14 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
         but the decimated sensors (ICESat-2, ATM, LVIS and DEMs) keep only
         the data that will be in the tile, their N_target values are counts
         of data in the tile, and the no-decimation mask is in lagrangian
-        coordinates.  The default is None.
+        coordinates.  Their data have the positions at the epoch, in fields
+        x_epoch and y_epoch (see lagrangianFrame.assign_epoch_xy), which
+        update_data_for_lagrangian uses.  The default is None.
+    read_DEM_shift_estimates: bool, optional
+        If True, read each DEM's _shift_est.h5 registration file (if any),
+        skip DEMs whose estimates fail the tests in
+        read_DEM_data.apply_DEM_metadata, and apply the estimated shift and
+        tilt to the others.  The default is False (DEMs are used as they are).
 
     Returns
     -------
@@ -289,7 +306,7 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
     """
     atc_shift_table=None
     laser_dict=laser_key()
-    sensor_dict={laser_dict[key]:key for key in ['ICESat1', 'ICESat2', 'ATM', 'ATM_ICESSN', 'LVIS','riegl']}
+    sensor_dict={num:name for name, num in laser_dict.items()}
     D=[]
     DEM=None
     if DEM_file is not None:
@@ -338,6 +355,9 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
                                         atc_shift_table=atc_shift_table,
                                         EPSG=EPSG, move_points=True)
                 Di.z += Di.dh_geoloc
+                if lagrangian_frame is not None and 'x_epoch' in Di.fields:
+                    # the points moved: their positions at the epoch, too
+                    lagrangian_frame.assign_epoch_xy(Di)
                 # cleanup additional fields:
                 for field in ['h_li','seg_azimuth','ref_azimuth','ref_coelv']:
                     Di.fields.remove(field)
@@ -367,7 +387,7 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
             D += D_ATM
     if 'ATM_ICESSN' in GI_files:
         D_ATM = read_ATM_ICESSN(xy0, W, find_gI_files(GI_files['ATM_ICESSN']),
-                                track_identifier=0)
+                                sensor=laser_dict['ATM_ICESSN'], track_identifier=0)
         if D_ATM is not None:
             D += D_ATM
 
@@ -395,7 +415,8 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
                             data_sigma_max=data_sigma_max,
                             year_offset=year_offset,
                             no_decimation_mask=no_decimation_mask,
-                            lagrangian_frame=lagrangian_frame)
+                            lagrangian_frame=lagrangian_frame,
+                            read_shift_estimates=read_DEM_shift_estimates)
         if D_DEM is not None:
             D += D_DEM
     if len(D)==0:
@@ -416,11 +437,10 @@ def read_optical_data(xy0, W, hemisphere=1, GI_files=None, \
         for Di in D:
             Di.assign(z_x = DEM.interp(Di.x, Di.y, field='z_x'))
             Di.assign(z_y = DEM.interp(Di.x, Di.y, field='z_y'))
+            # expected horizontal offsets: the geolocation error for each type
+            # of sensor (see altimetryFit.sensors)
+            E_geo = geolocation_error(Di.sensor, sensor_dict)
             for field in ['E_scale_z_x', 'E_scale_z_y']:
-                # reasonable hard-coded values?
-                temp=np.zeros_like(Di.x)+1
-                temp[Di.sensor == 2] = 3.5
-                temp[Di.sensor > 3] = 5
-                Di.assign({field:temp})
+                Di.assign({field:E_geo.copy()})
 
     return D, sensor_dict, DEM_meta_dict
