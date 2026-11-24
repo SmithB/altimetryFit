@@ -4,6 +4,7 @@ import h5py
 import re
 import glob
 import os
+from altimetryFit.sensors import sensor_attr_name
 
 
 def read_DEM_biases(save_file, DEM_roots=None):
@@ -40,7 +41,7 @@ def read_DEM_biases(save_file, DEM_roots=None):
         DEM_filenames={}
         DEM_sensors = list(bias_models.keys())
         for sensor in DEM_sensors:
-            this_DEM_file = str(fh['meta/sensors'].attrs[f'sensor_{int(sensor)}'])
+            this_DEM_file = str(fh['meta/sensors'].attrs[sensor_attr_name(sensor)])
             DEM_filenames[sensor] = this_DEM_file
 
     if DEM_roots is not None:

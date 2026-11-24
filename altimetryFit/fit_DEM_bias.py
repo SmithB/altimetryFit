@@ -29,6 +29,7 @@ import pointCollection as pc
 
 from altimetryFit.read_optical import find_gI_files
 from altimetryFit.read_ICESat2 import read_ICESat2
+from altimetryFit.sensors import laser_key
 from altimetryFit.fit_altimetry import get_SRS_proj4
 from altimetryFit.bias_functions.DEM_jitter_fit import (
     get_ATC_xform, setup_DEM_jitter_fit, parse_jitter_stripe_bias_grids,
@@ -85,7 +86,7 @@ def read_overlapping_ICESat2(DEM, geoIndex_source_file, hemisphere=1,
     if DEM_time is not None and max_dt is not None:
         t_range = [DEM_time - max_dt, DEM_time + max_dt]
 
-    D_list = read_ICESat2(xy0, W, gI_files, sensor=2,
+    D_list = read_ICESat2(xy0, W, gI_files, sensor=laser_key()['ICESat2'],
                            SRS_proj4=get_SRS_proj4(hemisphere),
                            cplx_accept_threshold=0.25,
                            blockmedian_scale=blockmedian_scale,

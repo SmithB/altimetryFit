@@ -14,9 +14,8 @@ from pathlib import Path
 import os
 import glob
 from scipy.interpolate import RectBivariateSpline
-
-def radar_key():
-    return {'CS2_POCA':-2,'CS2_swath':-1}
+# radar_key is defined in altimetryFit.sensors (imported here for older code)
+from altimetryFit.sensors import radar_key
 
 def interp_sigma(D, DEM, bias_sigma_file):
     # read the grids from the file

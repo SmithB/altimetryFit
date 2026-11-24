@@ -12,16 +12,100 @@ import json
 import glob
 import h5py
 import re
+import datetime
 import altimetryFit as aF
 from .get_ATC_xform import get_DEM_ATC_xform
 from LSsurf.subset_DEM_stack import subset_DEM_stack
 from .remove_overlapping_DEM_data import remove_overlapping_DEM_data
 from .decimation_mask import blockmedian_outside_mask
+from .sensors import first_DEM_sensor_number, sensor_from_attr_name
 
 
 def get_2m_filename(thefile):
-    DEM_re=re.compile('(.*)_\d+m_(.*)')
+    DEM_re=re.compile(r'(.*)_\d+m_(.*)')
     return '_2m_'.join(DEM_re.search(os.path.basename(thefile)).groups()).replace('_filt.tif','.tif')
+
+def decimal_year(this_datetime):
+    '''decimal year for a datetime, as in pointCollection.grid.DEM_year'''
+    delta = this_datetime - datetime.datetime(2000, 1, 1, 0, 0, 0)
+    return 2000 + 1/365.25*(delta.days + delta.seconds/24./3600.)
+
+def time_from_DEM_meta(meta):
+    '''
+    Acquisition time (decimal year) from the PGC (STAC) metadata of a strip DEM
+
+    The time is properties/datetime, the time of the first image of the pair
+    (as in pointCollection.grid.DEM_year).  Returns None if it is not there.
+    '''
+    try:
+        thestr = meta['properties']['datetime']
+    except (KeyError, TypeError):
+        return None
+    return decimal_year(datetime.datetime.strptime(thestr, '%Y-%m-%dT%H:%M:%SZ'))
+
+def sibling_segment_meta(filename):
+    '''
+    The PGC metadata of another segment of the same strip DEM, if one is saved
+
+    The segments of a strip share its pair of images, so their acquisition
+    times are the same.  Metadata are looked for where get_pgc saves them
+    (the meta directory next to the DEM's directory) and in the DEM's
+    directory and its meta subdirectory.
+    '''
+    # e.g. SETSM_s2s041_WV01_20200212_{id1}_{id2}_32m_lsf_seg1_dem_filt.tif,
+    # or (newer) ..._32m_seg1_dem_filt.tif
+    DEM_re = re.compile(r'(SETSM_.*?)_\d+m_(?:.*_)?seg\d+')
+    m = DEM_re.search(os.path.basename(filename))
+    if m is None:
+        return None
+    # PGC metadata files are named {pair}_{res}_..._seg{N}.json (not, e.g.,
+    # the _shift_est.json files next to the DEMs)
+    meta_re = re.compile(re.escape(m.group(1)) + r'_\d+m_(?:.*_)?seg\d+\.json$')
+    thedir = os.path.dirname(filename)
+    for meta_dir in [os.path.join(os.path.dirname(thedir), 'meta'), os.path.join(thedir, 'meta'), thedir]:
+        for meta_file in sorted(glob.glob(os.path.join(meta_dir, m.group(1)+'_*seg*.json'))):
+            if meta_re.search(os.path.basename(meta_file)) is None:
+                continue
+            try:
+                with open(meta_file) as fh:
+                    meta = json.load(fh)
+            except Exception:
+                continue
+            if time_from_DEM_meta(meta) is not None:
+                return meta
+    return None
+
+def DEM_acquisition_time(filename, pgc_url_file=None, VERBOSE=False):
+    '''
+    Full acquisition time (decimal year) of a strip DEM, and its PGC metadata
+
+    The time is read from the DEM's PGC metadata (see get_pgc, which downloads
+    the metadata if they are not saved and pgc_url_file has a url for the
+    DEM), or, failing that, from the saved metadata of another segment of the
+    same strip.  If neither is found, the time is pointCollection.grid.DEM_year,
+    which falls back to midnight of the date in the filename.
+
+    Returns
+    -------
+    time : float
+    meta : dict or None
+        the DEM's own metadata, if they were read
+    source : str
+        'meta', 'segment_meta', or 'filename'
+    '''
+    meta = None
+    try:
+        meta = aF.get_pgc(filename, pgc_url_file, targets=['meta'])['meta']
+    except Exception as e:
+        if VERBOSE:
+            print(f"read_DEM_data: no PGC metadata for {os.path.basename(filename)} ({e})")
+    t = time_from_DEM_meta(meta)
+    if t is not None:
+        return t, meta, 'meta'
+    t = time_from_DEM_meta(sibling_segment_meta(filename))
+    if t is not None:
+        return t, meta, 'segment_meta'
+    return pc.grid.DEM_year(filename), meta, 'filename'
 
 def read_problem_DEM_file(GI_files, problem_DEM_files=None):
     # some DEMs come up as problematic in testing.  Here is where we remove them
@@ -126,7 +210,34 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
                   time_range=None,
                   data_sigma_max=None,
                   include_xtrack=False, VERBOSE=True,
-                  no_decimation_mask=None):
+                  no_decimation_mask=None,
+                  lagrangian_frame=None,
+                  read_shift_estimates=False):
+    '''
+    Read DEM data for a region, and decimate them
+
+    With N_target, the blockmedian scale is increased from blockmedian_scale
+    so that about N_target values are returned for an area target_area.
+    With a lagrangian_frame (in a full-lagrangian fit; see
+    altimetryFit.lagrangian_functions.lagrangianFrame), only the data that
+    will be in the fit's tile are used, and the scale is set from their
+    number, so that about N_target values are in the tile; the no-decimation
+    mask is evaluated in lagrangian coordinates.
+
+    With read_shift_estimates, the registration estimates in each DEM's
+    _shift_est.h5 file (if there is one) are used: DEMs whose estimates fail
+    the tests in apply_DEM_metadata are skipped, and the estimated horizontal
+    shift and tilt are applied to the others.  By default (False), the
+    _shift_est.h5 files are not read, and the DEMs are used as they are.
+
+    The time of each DEM is its full acquisition time, from its PGC metadata
+    (see DEM_acquisition_time; the metadata are downloaded if they are not
+    saved and pgc_url_file lists the DEM), so that DEMs from the same day have
+    different times.  The time_range test and remove_overlapping_DEM_data use
+    these times.  DEMs are numbered from one more than the largest number in
+    sensor_dict, or from altimetryFit.sensors.first_DEM_sensor_number(), if
+    that is larger.
+    '''
 
     if DEM_meta_config is None:
         DEM_meta_config={}
@@ -164,7 +275,7 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
                 if get_2m_filename(DEM_base) in problem_DEMs:
                     if VERBOSE:
                         print(f"skipping problem DEM: {DEM_base}")
-                        continue
+                    continue
                 full_DEM_file = os.path.join(gI_dir, DEM_base)
                 this_mod_time = os.stat(full_DEM_file).st_mtime
                 if DEM_base not in DEM_filetimes or DEM_filetimes[DEM_base][0] < this_mod_time:
@@ -175,8 +286,24 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
             if DEBUG:
                 print(f"No data found for file: {this_file}")
     DEM_res = np.nan
+    # PGC metadata for each DEM file, read for the acquisition times
+    DEM_pgc_meta = {}
+    time_sources = {'meta':0, 'segment_meta':0, 'filename':0}
+    one_day = 1/365.25
+    xtrack_re=re.compile(r'_W(\d)W(\d)_')
     for file_time in DEM_filetimes.values():
+        if not include_xtrack and xtrack_re.search(os.path.basename(file_time[1])) is not None:
+            # cross-track DEMs are not used (checked here, before their metadata are read)
+            continue
         this_DEM_time = pc.grid.DEM_year(file_time[1])
+        if time_range is not None:
+            # first test: this time is from the saved metadata, or is midnight
+            # of the date in the filename, within a day of the acquisition time
+            if this_DEM_time  < time_range[0]-one_day or this_DEM_time > time_range[1]+one_day:
+                continue
+        # the full acquisition time, from the DEM's metadata (downloaded if needed)
+        this_DEM_time, this_meta, time_source = DEM_acquisition_time(file_time[1], pgc_url_file, VERBOSE=VERBOSE)
+        time_sources[time_source] += 1
         if time_range is not None:
             if this_DEM_time  < time_range[0] or this_DEM_time > time_range[1]:
                 continue
@@ -184,6 +311,8 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
         if 'z' not in temp.fields:
             continue
         temp.time = this_DEM_time
+        if this_meta is not None:
+            DEM_pgc_meta[temp.filename] = this_meta
         try:
             temp.assign(sigma = temp.z[:,:,1])
             temp.z = temp.z[:,:,0]
@@ -201,10 +330,19 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
 
     if VERBOSE:
         print("DEM_res is " + str(DEM_res))
+        print("\tread_DEM_data: DEM acquisition times from the DEM's metadata for "
+              f"{time_sources['meta']}, from another segment's metadata for {time_sources['segment_meta']}, "
+              f"and from the filename date for {time_sources['filename']} DEMs")
 
     if not include_xtrack:
-        xtrack_re=re.compile('_W(\d)W(\d)_')
         D = [ Di for Di in D if xtrack_re.search(Di.filename) is None ]
+    if lagrangian_frame is not None:
+        # use only the data that will be in the fit's tile (and keep their
+        # positions at the epoch, x_epoch and y_epoch, for the no-decimation
+        # mask and update_data_for_lagrangian)
+        for Di in D:
+            lagrangian_frame.select_data(Di)
+        D = [Di for Di in D if Di.size > 0]
     if target_area is None:
         target_area=W['x']*W['y']
     if VERBOSE:
@@ -212,10 +350,10 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
     if D is None:
         return None, sensor_dict
 
+    # DEM numbers follow the altimeter numbers (see altimetryFit.sensors)
+    first_key_num=first_DEM_sensor_number()
     if len(sensor_dict) > 0:
-        first_key_num=np.max([key for key in sensor_dict.keys()])+1
-    else:
-        first_key_num=0
+        first_key_num=max(first_key_num, int(np.floor(np.max([key for key in sensor_dict.keys()])))+1)
     key_num=0
     temp_sensor_dict=dict()
 
@@ -233,7 +371,9 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
         return None, sensor_dict, None
 
     if DEM_dt_min is not None:
-        # new: remove overlapping DEM data
+        # new: remove overlapping DEM data.  The DEM times are the full
+        # acquisition times (from the metadata), so DEMs from the same day
+        # have different times
         bounds=[xy0[0]+np.array([-W['x']/2, W['x']/2]), xy0[1]+np.array([-W['y']/2, W['y']/2])]
         remove_overlapping_DEM_data(D, bounds, 10*DEM_res, dt_min=DEM_dt_min)
         D=[Di for Di in D if Di.size>100]
@@ -247,7 +387,12 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
         N_unique = len(np.unique(np.round(np.concatenate([Di.x+1j*Di.y for Di in D])/DEM_res)))
         overlap = N_total/N_unique # average number of repeats per cell
         if N_total > N_target:
-            blockmedian_scale = np.maximum(blockmedian_scale, np.sqrt(target_area/(N_target/overlap)))
+            if lagrangian_frame is None:
+                blockmedian_scale = np.maximum(blockmedian_scale, np.sqrt(target_area/(N_target/overlap)))
+            else:
+                # the data are all in the tile: a DEM covering an area A gives
+                # A/scale**2 values, and the data cover N_total*DEM_res**2
+                blockmedian_scale = np.maximum(blockmedian_scale, DEM_res*np.sqrt(N_total/N_target))
             if VERBOSE:
                 print(f'\t read_DEM_data: DEM blockmedian scale = {np.round(blockmedian_scale)}')
 
@@ -258,12 +403,17 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
     for key_num, Di in enumerate(D):
         this_filename = os.path.basename(Di.filename)
 
-        meta, DEM_meta_config = apply_DEM_metadata(Di, DEM_meta_config)
-        if 'skip' in meta and meta['skip']:
-            continue
+        meta={}
+        if read_shift_estimates:
+            meta, DEM_meta_config = apply_DEM_metadata(Di, DEM_meta_config)
+            if 'skip' in meta and meta['skip']:
+                continue
+            if lagrangian_frame is not None and meta.get('shift_applied', False):
+                # the DEM moved: its positions at the epoch, too
+                lagrangian_frame.assign_epoch_xy(Di)
         if blockmedian_scale is not None:
             # data inside the no-decimation mask (if any) are not decimated
-            blockmedian_outside_mask(Di, blockmedian_scale, no_decimation_mask)
+            blockmedian_outside_mask(Di, blockmedian_scale, no_decimation_mask, frame=lagrangian_frame)
         if Di.size==0:
             continue
         this_sensor_number += 1
@@ -274,9 +424,12 @@ def read_DEM_data(xy0, W, sensor_dict, gI_files=None, hemisphere=1, sigma_corr=2
             Di.assign({'sigma':np.zeros_like(Di.x)+0.5})
         D_temp += [Di]
 
-        # get metadata
+        # get metadata (read above, with the acquisition time, if available)
         if read_basis_vectors:
-            meta=aF.get_pgc(Di.filename, pgc_url_file, targets=['meta'])['meta']
+            if Di.filename in DEM_pgc_meta:
+                meta=DEM_pgc_meta[Di.filename]
+            else:
+                meta=aF.get_pgc(Di.filename, pgc_url_file, targets=['meta'])['meta']
             meta['xform'], meta['poly'] = get_DEM_ATC_xform(meta)
         meta['sensor'] = this_sensor_number
         meta['filename'] = Di.filename
@@ -340,7 +493,7 @@ def regen_DEM_meta(xy0, W, data, save_file, gI_files, read_basis_vectors=True,
             #TEST: when rereading tile subsets, not every DEM will be in the file list
             if thebase not in file_dict:
                 continue
-            this_sensor_number = int(key.replace('sensor_',''))
+            this_sensor_number = sensor_from_attr_name(key)
             if 'SETSM' not in thebase:
                 continue
             if read_basis_vectors:
