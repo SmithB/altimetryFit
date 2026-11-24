@@ -56,6 +56,19 @@ def add_lag_fields(fields, max_coarse=40000, max_lag=1):
             field_str='avg_dzdt'+res+lag
             fields[field_str]=[field_str, 'sigma_'+field_str]
 
+# the field of each group whose RMS difference between fit tiles is mapped
+# with --tile_rms_diff (make_mosaic.py --tile_rms_diff)
+TILE_DIFF_FIELDS={'z0':'z0', 'dz':'dz'}
+
+def tile_diff_str(group, tile_rms_diff):
+    '''
+    make_mosaic.py option that maps the RMS difference between overlapping fit
+    tiles for this group's main field, or '' if none is wanted
+    '''
+    if not tile_rms_diff or group not in TILE_DIFF_FIELDS:
+        return ''
+    return f' --tile_rms_diff {TILE_DIFF_FIELDS[group]}'
+
 def make_tile_centers(region_dir, W, R_max=None):
 
 
@@ -169,6 +182,7 @@ def main():
     parser.add_argument('--R_max', type=float, help='make only tiles that intersect this radius')
     parser.add_argument('--mask_w', type=float, help="if specified, grid cells farther than this distance from a datapoint will be marked as invalid.")
     parser.add_argument('--EPSG', type=int, help="EPSG for output tifs")
+    parser.add_argument('--tile_rms_diff', action='store_true', help="also map the RMS difference between the overlapping fit tiles for z0 and dz (fields z0_tile_rms_diff, z0_tile_count, dz_tile_rms_diff and dz_tile_count; pairs of tiles are compared where both have nonzero mosaic weight, so the pad sets how far inside the tiles they are compared).  make_tile_tifs.py writes their tifs.")
     args, _=parser.parse_known_args()
 
     out_W=args.width
@@ -276,6 +290,7 @@ def main():
                     dz_file = out_file
 
                 pad, feather=weights[group]
+                diff_str=tile_diff_str(group, args.tile_rms_diff)
 
                 spacing_str=""
                 if group_spacing[group] is not None and group_spacing[group] > args.tile_W/2:
@@ -286,10 +301,10 @@ def main():
                     these_fields = ' '.join([sigma_fields[group], non_sigma_fields[group]])
                     fh.write(f"make_mosaic.py -v -w -d {in_dir} -g 'prelim/E*.h5' -r {search_bounds_str}" 
                              + f" -f {feather} -p {pad} -c {tile_bounds_str}" 
-                             + f" -G {group} -F {these_fields} -O {out_file} {spacing_str}\n")
+                             + f" -G {group} -F {these_fields} -O {out_file} {spacing_str}{diff_str}\n")
                 elif args.matched:
                     fh.write(f"make_mosaic.py -v -w -R -d {in_dir} -g 'matched/E*.h5' -r {search_bounds_str} -f {feather} -p {pad} -c {tile_bounds_str} " 
-                             + f"-G {group} -F {non_sigma_fields[group]} -O {out_file} {spacing_str}\n")
+                             + f"-G {group} -F {non_sigma_fields[group]} -O {out_file} {spacing_str}{diff_str}\n")
                     if args.calc_sigma:
                         fh.write(f"make_mosaic.py -w -d {in_dir} -g 'prelim/E*.h5' -r {search_bounds_str} -f {feather} -p {pad} -c {tile_bounds_str}"
                                  + f" -G {group} -F {sigma_fields[group]} -O {out_file} {spacing_str}\n")

@@ -14,6 +14,30 @@ import sys
 import scipy.ndimage as snd
 import os
 import glob
+import h5py
+
+def fields_in_file(filename, group, fields):
+    '''the members of fields that are in group of filename'''
+    with h5py.File(filename,'r') as h5f:
+        if group not in h5f:
+            return []
+        return [field for field in fields if field in h5f[group]]
+
+def rms_over_bands(rms, count, valid):
+    '''
+    Combine a per-band RMS difference between tiles (make_mosaic.py
+    --tile_rms_diff) into the RMS over all bands, weighting each band by its
+    number of tile pairs, count*(count-1)/2, and using only the bands where
+    valid (broadcast to the shape of rms) is True.  NaN where no band has a
+    pair of tiles.
+    '''
+    valid = np.broadcast_to(np.atleast_3d(valid), rms.shape) & np.isfinite(rms)
+    pairs = np.where(valid, count*(count-1)/2, 0)
+    ss = np.sum(pairs*np.where(valid, rms, 0)**2, axis=2)
+    n_pairs = np.sum(pairs, axis=2)
+    out = np.full(n_pairs.shape, np.nan)
+    out[n_pairs > 0] = np.sqrt(ss[n_pairs > 0]/n_pairs[n_pairs > 0])
+    return out
 
 def make_tile_tifs(dz_file, epsg, verbose=True, mask_w = None, geoid_file=None, read_sigma=False, skip_z0=False):
 
@@ -49,8 +73,13 @@ def make_tile_tifs(dz_file, epsg, verbose=True, mask_w = None, geoid_file=None, 
         if read_sigma:
             z0_fields += ['sigma_z0']
         if os.path.isfile(z0_file):
+            # the RMS difference between fit tiles, if the mosaic has it
+            # (make_mos_tiles.py --tile_rms_diff)
+            z0_fields += fields_in_file(z0_file, 'z0', ['z0_tile_rms_diff'])
             z0=pc.grid.data().from_h5(z0_file, group='z0', fields = z0_fields)
             z0.z0[z0.cell_area < 10]=np.nan
+            if 'z0_tile_rms_diff' in z0.fields:
+                z0.z0_tile_rms_diff[z0.cell_area < 10]=np.nan
             if mask_w is not None:
                 mask_N = int(np.ceil(mask_w / (z0.x[1]-z0.x[0])))
                 z0.assign(mask=snd.binary_dilation(\
@@ -58,6 +87,8 @@ def make_tile_tifs(dz_file, epsg, verbose=True, mask_w = None, geoid_file=None, 
                         np.ones([1, mask_N])).astype(float))
                 z0.mask[z0.mask==0]=np.nan
                 z0.z0 *= z0.mask
+                if 'z0_tile_rms_diff' in z0.fields:
+                    z0.z0_tile_rms_diff *= z0.mask
 
             if geoid_file is not None:
                 geoid=pc.grid.data().from_geotif(geoid_file, bounds=z0.bounds(pad=1.e4))
@@ -69,11 +100,16 @@ def make_tile_tifs(dz_file, epsg, verbose=True, mask_w = None, geoid_file=None, 
             z0.to_geotif(os.path.join(tif_dir,'cell_area', f'cell_area{base}.tif'), field='cell_area', **gtif_kwargs)
             if read_sigma:
                 z0.to_geotif(os.path.join(tif_dir,'sigma_z0', f'sigma_z0{base}.tif'), field='sigma_z0', **gtif_kwargs)
+            if 'z0_tile_rms_diff' in z0.fields:
+                os.makedirs(os.path.join(tif_dir, 'z0_tile_rms_diff'), exist_ok=True)
+                z0.to_geotif(os.path.join(tif_dir, 'z0_tile_rms_diff', f'z0_tile_rms_diff{base}.tif'),
+                             field='z0_tile_rms_diff', **gtif_kwargs)
     dz_file=os.path.join(input_dir,'dz','dz'+base+ext)
     if os.path.isfile(dz_file):
         dz_fields = ['dz','cell_area','count']
         if read_sigma:
             dz_fields += ['sigma_dz']
+        dz_fields += fields_in_file(dz_file, 'dz', ['dz_tile_rms_diff', 'dz_tile_count'])
         dz=pc.grid.data().from_h5(dz_file, group='dz', fields=dz_fields)
         dz.dz[dz.cell_area<100]=np.nan
 
@@ -92,6 +128,14 @@ def make_tile_tifs(dz_file, epsg, verbose=True, mask_w = None, geoid_file=None, 
         dz.to_geotif(os.path.join(tif_dir, 'epoch_count',f'epoch_count{base}.tif'), field='epoch_count', **gtif_kwargs)
         if 'sigma_dz' in dz_fields:
             dz.to_geotif(os.path.join(tif_dir,'sigma_dz', f'sigma_dz{base}.tif'), field='sigma_dz', **gtif_kwargs)  
+        if 'dz_tile_rms_diff' in dz.fields and 'dz_tile_count' in dz.fields:
+            # RMS difference in dz between fit tiles over all epochs, in the
+            # epochs where dz is valid (cell_area >= 100, as above)
+            dz.assign(dz_tile_rms_diff_all_epochs=dz.mask*rms_over_bands(
+                dz.dz_tile_rms_diff, dz.dz_tile_count, dz.cell_area >= 100))
+            os.makedirs(os.path.join(tif_dir, 'dz_tile_rms_diff'), exist_ok=True)
+            dz.to_geotif(os.path.join(tif_dir, 'dz_tile_rms_diff', f'dz_tile_rms_diff{base}.tif'),
+                         field='dz_tile_rms_diff_all_epochs', **gtif_kwargs)
     dzL_file=os.path.join(input_dir,'lagrangian_dz','lagrangian_dz'+base+ext)
     if os.path.isfile(dzL_file):
         for group in ['dzL','dzLdx','dz0_tot_dx']:
